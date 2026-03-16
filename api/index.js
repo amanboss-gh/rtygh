@@ -439,6 +439,43 @@ async function websiteProxy(req, res) {
   }
 }
 
+const CDN_BASE = 'https://speedcdn.io';
+
+app.get('/config/:filename', async (req, res) => {
+  try {
+    const cdnUrl = `${CDN_BASE}/config/${req.params.filename}`;
+    const response = await fetch(cdnUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' }
+    });
+    const ct = response.headers.get('content-type') || 'application/json';
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-store');
+    const body = await response.text();
+    res.send(body);
+  } catch(e) {
+    console.error('CDN config proxy error:', e.message);
+    res.status(502).send('Config fetch failed');
+  }
+});
+
+app.get('/assets/logos/:path(*)', async (req, res) => {
+  try {
+    const cdnUrl = `${CDN_BASE}/assets/logos/${req.params.path}`;
+    const response = await fetch(cdnUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' }
+    });
+    const ct = response.headers.get('content-type') || 'image/png';
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    const buf = Buffer.from(await response.arrayBuffer());
+    res.send(buf);
+  } catch(e) {
+    res.status(502).send('Logo fetch failed');
+  }
+});
+
 app.get('/apk_config/sites.json', async (req, res) => {
   const proxyHost = req.headers['x-forwarded-host'] || req.headers['host'] || '';
   const proxyUrl = `https://${proxyHost}`;
