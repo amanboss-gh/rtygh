@@ -390,6 +390,7 @@ async function websiteProxy(req, res) {
     delete respHeaders['etag'];
     delete respHeaders['last-modified'];
     const ct = (respHeaders['content-type'] || '').toLowerCase();
+    const proxyOrigin = 'https://' + (req.headers['x-forwarded-host'] || req.headers['host'] || 'rtyhh.vercel.app');
     if (ct.includes('javascript') || path.match(/main\.[a-f0-9]+\.js/)) {
       body = body.replace(
         /e=t\.location\.hostname\.replace\(\/\^www\\\.\//,
@@ -403,6 +404,11 @@ async function websiteProxy(req, res) {
         /e\.env\.baseUrl=`https:\/\/api\.\$\{[^}]+\}`/g,
         'e.env.baseUrl=""'
       );
+      body = body.replace(/https:\/\/speedcdn\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/edgecrate\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/loadpulse\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/coresling\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/pulseedge\.io\//g, proxyOrigin + '/');
     }
     if (ct.includes('html') || path === '/' || path === '') {
       body = body.replace(
@@ -417,6 +423,11 @@ async function websiteProxy(req, res) {
         /e\.env\.baseUrl=`https:\/\/api\.\$\{[^}]+\}`/g,
         'e.env.baseUrl=""'
       );
+      body = body.replace(/https:\/\/speedcdn\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/edgecrate\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/loadpulse\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/coresling\.io\//g, proxyOrigin + '/');
+      body = body.replace(/https:\/\/pulseedge\.io\//g, proxyOrigin + '/');
     }
     respHeaders['content-length'] = String(Buffer.byteLength(body));
     res.writeHead(response.status, respHeaders);
