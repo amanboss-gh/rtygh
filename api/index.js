@@ -6,7 +6,7 @@ const app = express();
 const WEBSITE_ORIGIN = 'https://reddybook.green';
 const API_ORIGIN = 'https://api.dcric99.com';
 const BOT_TOKEN = '8649123370:AAFqhS1BiG-wOiDYfh-LRdcUYEn43iOu67k';
-const WEBHOOK_URL = 'https://rtygh.vercel.app/bot-webhook';
+const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 
