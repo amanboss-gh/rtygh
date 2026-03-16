@@ -449,8 +449,8 @@ app.get('/apk_config/sites.json', async (req, res) => {
   res.json({
     reddybookio: {
       url: proxyUrl,
-      'version-code': '999',
-      'version-name': '9.9.9',
+      'version-code': '2',
+      'version-name': '1.0.1',
       apk: ''
     }
   });
