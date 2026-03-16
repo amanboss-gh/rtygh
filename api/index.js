@@ -417,8 +417,12 @@ async function websiteProxy(req, res) {
     const proxyOrigin = 'https://' + (req.headers['x-forwarded-host'] || req.headers['host'] || 'rtyhh.vercel.app');
     if (ct.includes('javascript') || path.match(/main\.[a-f0-9]+\.js/)) {
       body = body.replace(
-        /e=t\.location\.hostname\.replace\(\/\^www\\\.\//,
-        'e="reddybook.green";t.location.hostname.replace(/^www\\./'
+        /e=t\.location\.hostname\.replace\(\/\^www\\\.\/,""\)/g,
+        'e="reddybook.green"'
+      );
+      body = body.replace(
+        /e=t\.location\.hostname\.replace\(\/\^www\\\.\/,\s*""\)/g,
+        'e="reddybook.green"'
       );
       body = body.replace(/https:\/\/speedcdn\.io\//g, proxyOrigin + '/');
       body = body.replace(/https:\/\/edgecrate\.io\//g, proxyOrigin + '/');
