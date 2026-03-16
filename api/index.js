@@ -322,15 +322,18 @@ async function apiProxyFetch(req) {
   const path = req.originalUrl;
   const url = API_ORIGIN + path;
   const fwd = {};
+  const skipHeaders = new Set(['host','connection','content-length','transfer-encoding','accept-encoding','via','expect']);
   for (const [k, v] of Object.entries(req.headers)) {
     const kl = k.toLowerCase();
-    if (kl === 'host' || kl === 'connection' || kl === 'content-length' ||
-        kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
+    if (skipHeaders.has(kl) || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || 
+        kl.startsWith('x-real') || kl.startsWith('x-middleware') || kl.startsWith('cf-') ||
+        kl.startsWith('cdn-') || kl.startsWith('sec-') || kl === 'true-client-ip' || kl === 'x-request-id') continue;
     fwd[k] = v;
   }
   fwd['host'] = 'api.dcric99.com';
   fwd['origin'] = WEBSITE_ORIGIN;
   fwd['referer'] = WEBSITE_ORIGIN + '/';
+  fwd['user-agent'] = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
   const opts = { method: req.method, headers: fwd };
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
     opts.body = req.rawBody;
@@ -370,13 +373,16 @@ async function websiteProxy(req, res) {
     const path = req.originalUrl;
     const url = WEBSITE_ORIGIN + path;
     const fwd = {};
+    const skipWs = new Set(['host','connection','content-length','transfer-encoding','accept-encoding','via','expect']);
     for (const [k, v] of Object.entries(req.headers)) {
       const kl = k.toLowerCase();
-      if (kl === 'host' || kl === 'connection' || kl === 'content-length' ||
-          kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || kl === 'accept-encoding') continue;
+      if (skipWs.has(kl) || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || 
+          kl.startsWith('x-real') || kl.startsWith('x-middleware') || kl.startsWith('cf-') ||
+          kl.startsWith('cdn-') || kl.startsWith('sec-') || kl === 'true-client-ip' || kl === 'x-request-id') continue;
       fwd[k] = v;
     }
     fwd['host'] = 'reddybook.green';
+    fwd['user-agent'] = 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
     const response = await fetch(url, { method: 'GET', headers: fwd, redirect: 'follow' });
     let body = await response.text();
     const respHeaders = {};
