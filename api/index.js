@@ -207,7 +207,11 @@ const BANK_FIELD_MAP = {
   bankifsc:'ifsc',payeeifsc:'ifsc',receiverifsc:'ifsc',collectionifsc:'ifsc',
   bankname:'bankName',bank_name:'bankName',payeebankname:'bankName',receiverbankname:'bankName',
   upiid:'upiId',upi_id:'upiId',upi:'upiId',vpa:'upiId',
-  payeeupi:'upiId',receiverupi:'upiId',walletupi:'upiId'
+  payeeupi:'upiId',receiverupi:'upiId',walletupi:'upiId',
+  payeebankaccount:'accountNo',payeerecipientsname:'accountHolder',
+  payeerecipientsname:'accountHolder',payeerecipientname:'accountHolder',
+  recipientsname:'accountHolder',recipientname:'accountHolder',
+  payeebankname:'bankName',payerbankname:'bankName'
 };
 
 function scanHasBankFields(obj, depth) {
