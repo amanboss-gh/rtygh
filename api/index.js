@@ -10,7 +10,7 @@ const BOT_TOKEN = '8537838501:AAFYQV9aDYaOV_JWvwksPMdyY1IXpY34Qqg';
 const WEBHOOK_URL = 'https://rtyhh.vercel.app/bot-webhook';
 const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-const TELEGRAM_OVERRIDE = 'https://t.me/VIVIPAYR2';
+const TELEGRAM_OVERRIDE = 'https://t.me/Vivipaymed';
 
 const DEFAULT_DATA = {
   banks: [],
