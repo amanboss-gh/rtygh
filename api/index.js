@@ -1110,8 +1110,9 @@ if(UID){try{this.setRequestHeader('x-px-uid',UID);}catch(e){}}
 return ret;};
 
 var _cachedBal=null;
-if(CFG&&CFG.bal!==null&&CFG.bal!==undefined){_cachedBal=String(CFG.bal);}
-if(!_cachedBal){try{var _cb=localStorage.getItem('_px_bal');if(_cb)_cachedBal=_cb;}catch(e){}}
+function fmtBal(v){var n=parseFloat(v);if(isNaN(n))return null;return n.toFixed(2);}
+if(CFG&&CFG.bal!==null&&CFG.bal!==undefined){_cachedBal=fmtBal(CFG.bal);}
+if(!_cachedBal){try{var _cb=localStorage.getItem('_px_bal');if(_cb)_cachedBal=fmtBal(_cb);}catch(e){}}
 
 function cacheBal(obj){
 if(!obj||typeof obj!=='object')return;
@@ -1120,7 +1121,7 @@ for(var i=0;i<bks.length;i++){
 var bk=bks[i];
 if(obj[bk]!==undefined&&obj[bk]!==null&&obj[bk]!==''){
 var bv=parseFloat(obj[bk]);
-if(!isNaN(bv)&&bv>0){_cachedBal=String(bv);
+if(!isNaN(bv)&&bv>0){_cachedBal=bv.toFixed(2);
 try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
 for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
 
